@@ -38,6 +38,11 @@
   #btnRefresh.sync-err{background:#c62828;color:#fff;border-color:#c62828}
   .spin.sm{display:inline-block;width:11px;height:11px;border:2px solid #b9cdf5;border-top-color:#1f4fa8;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-1px}
   .syncnote{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:120;display:flex;gap:10px;align-items:center;padding:11px 16px;border-radius:4px;font-weight:700;box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:min(760px,94vw);font-size:max(12px, calc(14px * var(--fs)))}
+  .pendbar{background:#c62828;color:#fff;font-weight:700;padding:8px 16px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:max(12px, calc(14px * var(--fs)))}
+  .pendbar.other{background:#a35400}
+  .pendbar .pl{font-weight:400;opacity:.95}
+  .pendbar button{background:#fff;color:#8a1616;border:0;border-radius:3px;padding:5px 12px;font-weight:700;cursor:pointer}
+  .pendbar.hidden{display:none}
   .syncnote.ok{background:#eaf6e4;color:#1e5e22;border:2px solid #2e7d32}
   .syncnote.err{background:#fdecec;color:#8a1616;border:2px solid #c62828}
   .syncnote button{background:none;border:0;cursor:pointer;font-size:16px;color:inherit;margin-left:6px}
@@ -393,7 +398,7 @@
     <button class="btn ghost" id="btnSettings" title="Settings">⚙</button>
     <a class="btn ghost hidden" id="lnkSheet" target="_blank" style="text-decoration:none">Sheet ↗</a>
   </div>
-</div></header>
+</div><div id="pendBar" class="pendbar hidden"></div></header>
 
 <main>
   <div id="connectBox" class="card hidden" style="border-top:3px solid var(--amber);margin-bottom:16px">
@@ -503,7 +508,6 @@
       <h2 style="margin:0;flex:1">Daily cash ledger</h2>
       <span class="hint">Cash sales of one day — per item, total per transaction, cash denomination and signatures</span>
       <div style="width:170px"><input type="date" id="ledDate"></div>
-      <button class="btn sm" id="btnCashShare" title="A link that anyone can open to view and print the daily cash ledger (read-only)">🔗 Share link</button>
       <button class="btn primary" id="btnLedger">🖨 Print cash ledger</button>
     </div>
     <div class="card" style="margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -515,7 +519,7 @@
       <button class="btn primary" id="btnSdLedger">📒 Open ledger</button>
     </div>
     <div class="card" style="margin-bottom:14px;padding:0;overflow:hidden">
-      <div style="display:flex;align-items:center;padding:10px 14px"><h2 style="margin:0;flex:1">Daily sales — Cash vs Credit / Salary deduct</h2><button class="btn sm" id="btnDailyShare" title="A link that anyone can open to view only this table (read-only)" style="margin-right:6px">🔗 Share link</button><button class="btn sm" id="btnDailyCsv">Export CSV</button></div>
+      <div style="display:flex;align-items:center;padding:10px 14px"><h2 style="margin:0;flex:1">Daily sales — Cash vs Credit / Salary deduct</h2><button class="btn sm" id="btnDailyCsv">Export CSV</button></div>
       <div style="overflow:auto"><table class="daily" id="dailyTable"></table></div>
     </div>
     <div class="sgrid" id="sumTables"></div>
@@ -650,7 +654,7 @@ async function api(fn, ...args){
   // stop waiting after 90 s (a stuck connection is treated like no internet: saved copy + Sync still work)
   const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
   const timer = ac ? setTimeout(() => ac.abort(), 90000) : 0;
-  try { res = await fetch(c.url, {method:'POST', body: JSON.stringify({key: c.key, fn, args}), signal: ac ? ac.signal : undefined}); }
+  try { res = await fetch(c.url, {method:'POST', body: JSON.stringify({key: c.key, fn, args, page: SDVIEW ? '' : location.origin + location.pathname}), signal: ac ? ac.signal : undefined}); }
   catch (e){ clearTimeout(timer); throw offlineErr(); }
   clearTimeout(timer);
   try { data = await res.json(); }
@@ -936,8 +940,25 @@ let ONLINE = true, OUTBOX = [], POOL = [], CACHE_AT = 0;
 // speed: by default only this month + last month are downloaded; Summary "All" loads the full history once
 let FULL_HISTORY = false, DATA_SINCE = '', LAST_MS = 0;
 function recentSince(){ const d = new Date(); return isoOf(new Date(d.getFullYear(), d.getMonth() - 1, 1)); }
-async function loadDeviceState(){ try { OUTBOX = (await IDB.get('outbox')) || []; POOL = (await IDB.get('pool')) || []; } catch(e){} updateNet(); }
-const saveOutbox = () => IDB.set('outbox', OUTBOX).catch(() => toast('Could not store the offline sale on this device!', true));
+async function loadDeviceState(){ try { OUTBOX = ((await IDB.get('outbox')) || []).filter(x => !GONE.includes(x.uid)); POOL = (await IDB.get('pool')) || []; } catch(e){} updateNet(); pendBar(); }
+/* Sales that are uploaded (or removed on purpose) are remembered here, so another open tab can never bring them back. */
+let GONE = (() => { try { return JSON.parse(localStorage.getItem('sml_goneUids') || '[]'); } catch(e){ return []; } })();
+function markGone(uid){ if (!uid || GONE.includes(uid)) return; GONE.push(uid); if (GONE.length > 600) GONE = GONE.slice(-600); try { localStorage.setItem('sml_goneUids', JSON.stringify(GONE)); } catch(e){} }
+let OUTBOX_SAVING = Promise.resolve();
+/* Save the waiting sales. Another tab of the dashboard may have saved its own waiting sales meanwhile:
+   merge them (by uid) instead of overwriting, so no tab can wipe out another tab's sales. */
+function saveOutbox(){
+  OUTBOX_SAVING = OUTBOX_SAVING.then(async () => {
+    try { GONE = JSON.parse(localStorage.getItem('sml_goneUids') || '[]'); } catch(e){}
+    let stored = [];
+    try { stored = (await IDB.get('outbox')) || []; } catch(e){}
+    const have = new Set(OUTBOX.map(x => x.uid));
+    stored.forEach(x => { if (x && x.uid && !have.has(x.uid) && !GONE.includes(x.uid)) OUTBOX.push(x); });
+    OUTBOX = OUTBOX.filter(x => !GONE.includes(x.uid)).sort((a, b) => (a.at || 0) - (b.at || 0));
+    await IDB.set('outbox', OUTBOX);
+  }).catch(() => toast('Could not store the sale on this device!', true)).then(() => { try { pendBar(); } catch(e){} });
+  return OUTBOX_SAVING;
+}
 const savePool = () => IDB.set('pool', POOL).catch(() => {});
 function setOnline(on){ ONLINE = on; updateNet(); }
 function updateNet(){
@@ -963,30 +984,70 @@ function needOnline(what){ if (ONLINE) return false; toast((what || 'This') + ' 
 let UPLOADING = null;
 function uploadOutbox(quiet){ return UPLOADING || (UPLOADING = doUpload(quiet).finally(() => { UPLOADING = null; })); }
 async function doUpload(quiet){
-  let ok = 0, reload = false; const notes = [];
+  let ok = 0, reload = false, failed = 0; const notes = [], tried = new Set();
+  await saveOutbox();   // pick up sales waiting in other tabs of this browser too
   while (OUTBOX.length){
-    const sale = OUTBOX[0];
+    const sale = OUTBOX.find(x => !tried.has(x.uid)); if (!sale) break;
+    tried.add(sale.uid);
     try {
       const r = await api('addSale', sale.rows, {uid: sale.uid, control: sale.control || undefined});
       setOnline(true); ok++;
       if (!sale.control || r.control !== sale.control) notes.push((sale.control || 'PENDING') + ' → ' + r.control + ' (' + sale.rows[0].customer + ')');
+      markGone(sale.uid);
       OUTBOX = OUTBOX.filter(x => x.uid !== sale.uid); await saveOutbox();
       if (!r.firstRow || r.duplicate) reload = true;
       else sale.rows.forEach((x, i) => ROWS.push(enrich(Object.assign({}, x, {_row: r.firstRow + i, [CONTROL_FIELD]: r.control}))));
       ROWS = ROWS.filter(x => !x._pending).concat(pendingRows());
       renderDay(); if (summaryVisible()) renderSummary(); updateNet();
     } catch (e){
-      if (e.offline){ setOnline(false); if (!quiet) toast('Still offline — ' + OUTBOX.length + ' sale(s) waiting on this device.', true); }
-      else toast('Upload stopped: ' + (e.message || e) + ' — ' + OUTBOX.length + ' sale(s) still waiting. Click ⟳ Sync to retry.', true);
-      break;
+      if (e.offline){ setOnline(false); if (!quiet) toast('Still offline — ' + OUTBOX.length + ' sale(s) waiting on this device.', true); break; }
+      // a problem with THIS sale: keep it, note why, and go on with the next one (one bad sale must not hold back the others)
+      sale.err = String(e.message || e).slice(0, 200); sale.tries = (sale.tries || 0) + 1; sale.lastTry = Date.now(); failed++;
+      await saveOutbox();
     }
   }
+  if (failed) toast('⚠ ' + failed + ' sale(s) could NOT be saved to the sheet yet: ' + (OUTBOX.find(x => x.err) || {}).err + ' — retrying automatically.', true);
+  reportPending();
   updateNet();
   if (notes.length) toast('Control no. changed — please REPRINT: ' + notes.join(', '), true);
   else if (ok && !quiet) toast('Synced ' + ok + ' sale(s) to the Google Sheet ✓');
   if (ok) { buildIndex(); refillPool(); }
   if (reload && quiet) load(true);
   return ok;
+}
+/* Keep trying in the background while sales are waiting (every 20 s), whatever tab the user is on. */
+setInterval(() => { if (!SDVIEW && OUTBOX.length && !UPLOADING && (typeof navigator === 'undefined' || navigator.onLine !== false)) uploadOutbox(true); }, 20000);
+window.addEventListener('beforeunload', e => { if (!SDVIEW && OUTBOX.length){ e.preventDefault(); e.returnValue = OUTBOX.length + ' sale(s) are not yet saved to the Google Sheet. Keep this page open.'; return e.returnValue; } });
+/* Tell the server what is still waiting on this computer, so every dashboard can show it. */
+let LAST_REPORT = '';
+function reportPending(){
+  if (SDVIEW) return;
+  const list = OUTBOX.map(x => ({c: x.control || 'PENDING', n: (x.rows[0] || {}).customer || '', a: x.at || 0, e: x.err || ''})).slice(0, 40);
+  const sig = JSON.stringify(list.map(x => x.c + x.e));
+  if (sig === LAST_REPORT) return;
+  api('reportPending', DEVICE, store('rep') || '', list).then(() => { LAST_REPORT = sig; }).catch(() => {});
+}
+let OTHER_PEND = {};
+const hhmm = t => t ? new Date(t).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : '';
+/** Red bar under the header: sales printed on THIS computer but not yet in the sheet; orange: waiting on OTHER computers. */
+function pendBar(){
+  const el = $('pendBar'); if (!el || SDVIEW) return;
+  const n = OUTBOX.length;
+  const others = Object.keys(OTHER_PEND || {}).filter(d => d !== DEVICE && (OTHER_PEND[d].list || []).length);
+  if (n){
+    const err = (OUTBOX.find(x => x.err) || {}).err;
+    el.className = 'pendbar';
+    el.innerHTML = '⚠ ' + n + ' sale(s) on this computer are NOT yet saved in the Google Sheet — keep this page open' +
+      '<span class="pl">' + esc(OUTBOX.slice(0, 8).map(x => (x.control || 'PENDING') + ' ' + ((x.rows[0] || {}).customer || '')).join(' · ')) + (n > 8 ? ' …' : '') + (err ? ' · Reason: ' + esc(err) : '') + '</span>' +
+      '<button id="pendRetry">⟳ Upload now</button>';
+    $('pendRetry').onclick = () => syncNow();
+  } else if (others.length){
+    el.className = 'pendbar other';
+    el.innerHTML = '⚠ Sales waiting on other computers (not yet in the sheet): <span class="pl">' +
+      others.map(d => { const p = OTHER_PEND[d]; return esc((p.who || 'unknown') + ' · computer ' + d) + ' — ' + p.list.length + ' sale(s) (' + esc(p.list.slice(0, 5).map(x => x.c).join(', ')) + ')' + (p.list[0] && p.list[0].e ? ' · ' + esc(p.list[0].e) : '') + ' · as of ' + esc(hhmm(p.at)); }).join(' | ') +
+      '</span><span class="pl">Open the dashboard on that computer (same browser) and click ⟳ Sync.</span>';
+  } else el.className = 'pendbar hidden';
+  window.dispatchEvent(new Event('resize'));
 }
 var SYNC_BUSY = false, SYNC_FLASH = 0;
 async function syncNow(){
@@ -1051,6 +1112,7 @@ async function load(silent, fresh){
       d = c.d; fromCache = true; CACHE_AT = c.at;
       if (!LISTS.rates.length && c.lists) applyLists(c.lists);
     }
+    if (d.config && !fromCache){ OTHER_PEND = d.config.pending || {}; }
     if (d.config){ CAT = d.config.categories || CAT; SOURCE = d.config.source || SOURCE; CONTROL_FIELD = d.config.controlField || CONTROL_FIELD; if (d.config.sdRules) SD_RULES = Object.assign({limit: 0, cut: [15, 31], limits: {}, periods: [], balStart: ''}, d.config.sdRules); }
     ROWS = applyOverrides(d.rows.map(a => { const o = {_row: a[0]}; d.keys.forEach((k, i) => o[k] = a[i+1]); return enrich(o); }), !fromCache);
     $('lnkSheet').href = d.url; $('lnkSheet').classList.remove('hidden');
@@ -1071,6 +1133,8 @@ async function load(silent, fresh){
     buildIndex(); onCustomer(true); renderDay(); fillSummaryFilters(); if (summaryVisible()) renderSummary();
     if ((listsChanged || fromCache) && !LEDIT.dirty) openList(LEDIT.key);
     if (!fromCache && OUTBOX.length) uploadOutbox(true);
+    if (!fromCache && !OUTBOX.length) reportPending();
+    pendBar();
     const t = d => new Date(d).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
     $('status').textContent = fromCache ? 'OFFLINE · showing data saved ' + t(CACHE_AT) + (OUTBOX.length ? ' · ' + OUTBOX.length + ' sale(s) waiting to sync' : '')
       : ROWS.length.toLocaleString() + ' sales lines' + (DATA_SINCE ? ' since ' + fmtDate(DATA_SINCE) : ' (all history)') + ' · updated ' + new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) +
@@ -2332,7 +2396,7 @@ async function delRow(r){
     if (UPLOADING && ONLINE) return toast('This sale is being uploaded right now — wait a few seconds, then delete it.', true);
     if (!confirm('Remove this NOT-synced line from this device?\n\n' + r.customer + '\n' + r.particulars + ' · ' + peso(r._amt))) return;
     const sale = OUTBOX.find(s => s.uid === r._uid);
-    if (sale){ const i = sale.rows.findIndex(x => x.particulars === r.particulars && num(x.amount) === r._amt); if (i >= 0) sale.rows.splice(i, 1); if (!sale.rows.length) OUTBOX = OUTBOX.filter(s => s !== sale); await saveOutbox(); }
+    if (sale){ const i = sale.rows.findIndex(x => x.particulars === r.particulars && num(x.amount) === r._amt); if (i >= 0) sale.rows.splice(i, 1); if (!sale.rows.length){ markGone(sale.uid); OUTBOX = OUTBOX.filter(s => s !== sale); } await saveOutbox(); }
     ROWS = ROWS.filter(x => !x._pending).concat(pendingRows()); renderDay(); if (summaryVisible()) renderSummary(); updateNet(); return;
   }
   if (needOnline('Deleting')) return;
@@ -2695,8 +2759,6 @@ $('ledDate').value = todayISO();
 $('btnLedger').onclick = openLedger;
 $('btnSdLedger').onclick = openSdLedger;
 $('btnSdShare').onclick = () => openShare('sd');
-$('btnCashShare').onclick = () => openShare('cash');
-$('btnDailyShare').onclick = () => openShare('daily');
 $('btnSdUpload').onclick = openSdUpload;
 $('btnSettings').onclick = openSettings;
 $('btnTrash').onclick = openTrash;
