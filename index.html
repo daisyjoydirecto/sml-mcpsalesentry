@@ -2183,8 +2183,15 @@ async function openAudit(){
     $('auBody').innerHTML = '<p style="margin:4px 0 10px"><b>' + esc(longDate(r.date)) + '</b> — ' + r.inSheet + ' sale(s) in the sheet' + (r.range.length ? ', control no. ' + esc(r.range[0]) + ' to ' + esc(r.range[1]) : '') +
       ' · <b style="color:' + (bad.length ? '#a01c1c' : '#2e7d32') + '">' + (bad.length ? bad.length + ' missing' : 'nothing missing') + '</b></p>' +
       (r.items.length ? '<div class="tablewrap" style="max-height:55vh"><table><thead><tr><th>Control No.</th><th>Status</th><th>What happened</th><th></th></tr></thead><tbody>' +
-        r.items.map(x => '<tr><td><b>' + esc(x.ctrl) + '</b></td><td style="white-space:nowrap;font-weight:700;color:' + AUDIT_LBL[x.status][1] + '">' + AUDIT_LBL[x.status][0] + '</td><td>' + esc(x.detail) + '</td><td>' +
+        r.items.map(x => '<tr' + ((x.status === 'lost' || x.status === 'unknown') ? ' data-miss="' + esc(x.ctrl) + '"' : '') + '><td><b>' + esc(x.ctrl) + '</b></td><td style="white-space:nowrap;font-weight:700;color:' + AUDIT_LBL[x.status][1] + '">' + AUDIT_LBL[x.status][0] + '</td><td>' + esc(x.detail) + '</td><td>' +
           (x.canRestore ? '<button class="btn primary sm" data-rs="' + esc(x.ctrl) + '">↩ Put back</button>' : '') + '</td></tr>').join('') + '</tbody></table></div>' : '') +
+      (bad.filter(x => x.status !== 'waiting').length ? '<div class="card" style="margin:10px 0;padding:12px;border:2px solid #a01c1c;background:#fff8f8">' +
+        '<b>Restore the ' + bad.filter(x => x.status !== 'waiting').length + ' lost sale(s) from Version history</b>' +
+        '<ol style="margin:6px 0 8px 18px;padding:0;line-height:1.55"><li>Open the Google Sheet → <b>File → Version history → See version history</b>.</li>' +
+        '<li>Click a version from <b>' + esc(longDate(r.date)) + '</b> in the evening (after the sales were made) → <b>⋮ → Make a copy</b>.</li>' +
+        '<li>Open the copy, copy its link from the address bar, paste it here and click <b>Restore</b>. Only the missing control numbers are added; nothing is duplicated.</li></ol>' +
+        '<div style="display:flex;gap:8px"><input id="auCopy" placeholder="https://docs.google.com/spreadsheets/d/…  (link of the COPY)" style="flex:1"><button class="btn primary" id="auRec">↩ Restore</button></div>' +
+        '<div id="auRecMsg" class="hint" style="margin-top:6px"></div></div>' : '') +
       '<p class="hint">❌ LOST / ❓ NOT IN SHEET = re-enter it from the printed slip (or, for sales before today\'s update, find it in File → Version history of the Google Sheet). ' +
       '⏳ WAITING = open the dashboard on that computer and click ⟳ Sync. ○ NOT USED = a number a computer reserved but has not used yet — nothing is missing.' + (r.saveLog ? '' : ' · The Save Log starts with this update, so "↩ Put back" works for sales saved from now on.') + '</p>';
     $('auBody').querySelectorAll('[data-rs]').forEach(b => b.onclick = async () => {
@@ -2193,6 +2200,21 @@ async function openAudit(){
       catch (e){ toast('Failed: ' + (e.message || e), true); b.disabled = false; b.textContent = '↩ Put back'; }
     });
   };
+  $('auBody').addEventListener('click', async e => {
+    if (!e.target.closest('#auRec')) return;
+    const url = $('auCopy').value.trim(); if (!url) return toast('Paste the link of the copy first.', true);
+    const want = [...$('auBody').querySelectorAll('tr[data-miss]')].map(t => t.dataset.miss);
+    const b = $('auRec'); b.disabled = true; b.innerHTML = '<span class="spin sm"></span> Restoring…';
+    try {
+      const x = await api('recoverFromCopy', url, want);
+      $('auRecMsg').innerHTML = '<b style="color:#2e7d32">Put back ' + x.restoredSales + ' sale(s) (' + x.restoredLines + ' line(s)) from "' + esc(x.copyName) + '"</b>' +
+        (x.restored.length ? ': ' + esc(x.restored.join(', ')) : '') +
+        (x.notInCopy.length ? '<br><b style="color:#a01c1c">Not in this copy (' + x.notInCopy.length + '):</b> ' + esc(x.notInCopy.join(', ')) + ' — try a copy of an EARLIER or LATER version, or re-enter from the printed slips.' : '');
+      toast('Restored ' + x.restoredSales + ' sale(s) ✓'); load(true, true);
+      setTimeout(run, 2500);
+    } catch (err){ $('auRecMsg').innerHTML = '<b style="color:#a01c1c">' + esc(err.message || err) + '</b>'; }
+    b.disabled = false; b.textContent = '↩ Restore';
+  });
   $('auGo').onclick = run; $('auDate').onchange = run;
   run();
 }
