@@ -2164,10 +2164,43 @@ async function sdViewBoot(){
 }
 
 /* ================= TRASH BIN ================= */
+/* ================= BACKTRACK: control numbers of a day that are not in the sheet ================= */
+const AUDIT_LBL = {lost: ['❌ LOST', '#a01c1c'], unknown: ['❓ NOT IN SHEET', '#a01c1c'], waiting: ['⏳ WAITING', '#a35400'], deleted: ['🗑 DELETED', '#555'], 'other-date': ['📅 OTHER DATE', '#1f4fa8'], unused: ['○ NOT USED', '#777']};
+async function openAudit(){
+  if (needOnline('Finding missing entries')) return;
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  $('modalRoot').innerHTML = '<div class="overlay"><div class="modal wide"><div class="mh"><h3>🔎 Find missing entries</h3><button class="btn ghost sm" data-x>✕</button></div><div class="body">' +
+    '<div class="toolbar" style="margin-bottom:8px"><b>Date</b><input type="date" id="auDate" style="width:auto" value="' + isoOf(y) + '"><button class="btn primary" id="auGo">Check</button><span class="hint">Checks every control number of that day against the sheet, the Trash, the Save Log and the computers</span></div>' +
+    '<div id="auBody"></div></div></div></div>';
+  $('modalRoot').querySelector('[data-x]').onclick = () => $('modalRoot').innerHTML = '';
+  const run = async () => {
+    const date = $('auDate').value; if (!date) return;
+    $('auBody').innerHTML = '<p class="hint" style="padding:16px;text-align:center"><span class="spin sm"></span> Reading the whole sheet… (can take a minute)</p>';
+    let r;
+    try { r = await api('auditControls', date); }
+    catch (e){ $('auBody').innerHTML = '<p style="color:#a01c1c;font-weight:700">Could not check: ' + esc(e.message || e) + (/Unknown action/i.test(e.message || '') ? ' — deploy Code.gs v28.' : '') + '</p>'; return; }
+    const bad = r.items.filter(x => x.status === 'lost' || x.status === 'unknown' || x.status === 'waiting');
+    $('auBody').innerHTML = '<p style="margin:4px 0 10px"><b>' + esc(longDate(r.date)) + '</b> — ' + r.inSheet + ' sale(s) in the sheet' + (r.range.length ? ', control no. ' + esc(r.range[0]) + ' to ' + esc(r.range[1]) : '') +
+      ' · <b style="color:' + (bad.length ? '#a01c1c' : '#2e7d32') + '">' + (bad.length ? bad.length + ' missing' : 'nothing missing') + '</b></p>' +
+      (r.items.length ? '<div class="tablewrap" style="max-height:55vh"><table><thead><tr><th>Control No.</th><th>Status</th><th>What happened</th><th></th></tr></thead><tbody>' +
+        r.items.map(x => '<tr><td><b>' + esc(x.ctrl) + '</b></td><td style="white-space:nowrap;font-weight:700;color:' + AUDIT_LBL[x.status][1] + '">' + AUDIT_LBL[x.status][0] + '</td><td>' + esc(x.detail) + '</td><td>' +
+          (x.canRestore ? '<button class="btn primary sm" data-rs="' + esc(x.ctrl) + '">↩ Put back</button>' : '') + '</td></tr>').join('') + '</tbody></table></div>' : '') +
+      '<p class="hint">❌ LOST / ❓ NOT IN SHEET = re-enter it from the printed slip (or, for sales before today\'s update, find it in File → Version history of the Google Sheet). ' +
+      '⏳ WAITING = open the dashboard on that computer and click ⟳ Sync. ○ NOT USED = a number a computer reserved but has not used yet — nothing is missing.' + (r.saveLog ? '' : ' · The Save Log starts with this update, so "↩ Put back" works for sales saved from now on.') + '</p>';
+    $('auBody').querySelectorAll('[data-rs]').forEach(b => b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Putting back…';
+      try { const x = await api('restoreFromLog', [b.dataset.rs]); toast(x.restored ? b.dataset.rs + ' put back in the sheet ✓' : 'Not restored: ' + (x.skipped.join(', ') || 'not found')); load(true, true); run(); }
+      catch (e){ toast('Failed: ' + (e.message || e), true); b.disabled = false; b.textContent = '↩ Put back'; }
+    });
+  };
+  $('auGo').onclick = run; $('auDate').onchange = run;
+  run();
+}
 async function openTrash(){
   if (needOnline('The Trash')) return;
-  $('modalRoot').innerHTML = '<div class="overlay"><div class="modal wide"><div class="mh"><h3>🗑 Trash — deleted lines</h3><button class="btn ghost sm" data-x>✕</button></div><div class="body" id="trBody"><p class="hint">Loading…</p></div></div></div>';
+  $('modalRoot').innerHTML = '<div class="overlay"><div class="modal wide"><div class="mh"><h3>🗑 Trash — deleted lines</h3><button class="btn sm" id="trAudit" style="margin-left:auto;margin-right:8px">🔎 Find missing entries</button><button class="btn ghost sm" data-x>✕</button></div><div class="body" id="trBody"><p class="hint">Loading…</p></div></div></div>';
   $('modalRoot').querySelector('[data-x]').onclick = () => $('modalRoot').innerHTML = '';
+  $('trAudit').onclick = openAudit;
   let items = [];
   try { items = await api('listTrash'); }
   catch (e){ $('trBody').innerHTML = '<p class="hint">Could not open the Trash: ' + esc(e.message || e) + '</p>'; return; }
