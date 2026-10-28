@@ -2182,16 +2182,17 @@ async function openAudit(){
     const bad = r.items.filter(x => x.status === 'lost' || x.status === 'unknown' || x.status === 'waiting');
     $('auBody').innerHTML = '<p style="margin:4px 0 10px"><b>' + esc(longDate(r.date)) + '</b> — ' + r.inSheet + ' sale(s) in the sheet' + (r.range.length ? ', control no. ' + esc(r.range[0]) + ' to ' + esc(r.range[1]) : '') +
       ' · <b style="color:' + (bad.length ? '#a01c1c' : '#2e7d32') + '">' + (bad.length ? bad.length + ' missing' : 'nothing missing') + '</b></p>' +
-      (r.items.length ? '<div class="tablewrap" style="max-height:55vh"><table><thead><tr><th>Control No.</th><th>Status</th><th>What happened</th><th></th></tr></thead><tbody>' +
-        r.items.map(x => '<tr' + ((x.status === 'lost' || x.status === 'unknown') ? ' data-miss="' + esc(x.ctrl) + '"' : '') + '><td><b>' + esc(x.ctrl) + '</b></td><td style="white-space:nowrap;font-weight:700;color:' + AUDIT_LBL[x.status][1] + '">' + AUDIT_LBL[x.status][0] + '</td><td>' + esc(x.detail) + '</td><td>' +
-          (x.canRestore ? '<button class="btn primary sm" data-rs="' + esc(x.ctrl) + '">↩ Put back</button>' : '') + '</td></tr>').join('') + '</tbody></table></div>' : '') +
+      (r.items.length ? '<div class="tablewrap" style="max-height:45vh"><table><thead><tr><th style="width:30px"><input type="checkbox" id="auAll" checked title="Select all missing" style="width:auto"></th><th>Control No.</th><th>Status</th><th>What happened</th><th></th></tr></thead><tbody>' +
+        r.items.map(x => { const miss = x.status === 'lost' || x.status === 'unknown'; return '<tr' + (miss ? ' data-miss="' + esc(x.ctrl) + '"' : '') + '><td>' + (miss ? '<input type="checkbox" class="auPick" value="' + esc(x.ctrl) + '" checked style="width:auto">' : '') + '</td><td><b>' + esc(x.ctrl) + '</b></td><td style="white-space:nowrap;font-weight:700;color:' + AUDIT_LBL[x.status][1] + '">' + AUDIT_LBL[x.status][0] + '</td><td>' + esc(x.detail) + '</td><td>' +
+          (x.canRestore ? '<button class="btn primary sm" data-rs="' + esc(x.ctrl) + '">↩ Put back</button>' : '') + '</td></tr>'; }).join('') + '</tbody></table></div>' : '') +
       (bad.filter(x => x.status !== 'waiting').length ? '<div class="card" style="margin:10px 0;padding:12px;border:2px solid #a01c1c;background:#fff8f8">' +
         '<b>Restore the ' + bad.filter(x => x.status !== 'waiting').length + ' lost sale(s) from Version history</b>' +
         '<ol style="margin:6px 0 8px 18px;padding:0;line-height:1.55"><li>Open the Google Sheet → <b>File → Version history → See version history</b>.</li>' +
         '<li>Click a version from <b>' + esc(longDate(r.date)) + '</b> in the evening (after the sales were made) → <b>⋮ → Make a copy</b>.</li>' +
-        '<li>Open the copy, copy its link from the address bar, paste it here and click <b>Restore</b>. Only the missing control numbers are added; nothing is duplicated.</li></ol>' +
-        '<div style="display:flex;gap:8px"><input id="auCopy" placeholder="https://docs.google.com/spreadsheets/d/…  (link of the COPY)" style="flex:1"><button class="btn primary" id="auRec">↩ Restore</button></div>' +
-        '<div id="auRecMsg" class="hint" style="margin-top:6px"></div></div>' : '') +
+        '<li>Open the copy, copy its link from the address bar, paste it here and click <b>🔍 Look in copy</b>. You will see what the copy has for the <b>ticked</b> numbers — tick the ones to put back, then <b>↩ Restore selected</b>.</li></ol>' +
+        '<p class="hint" style="margin:0 0 8px">Restoring only ADDS the chosen sales at the end of the sales tab. Today\'s entries and everything else in the sheet stay exactly as they are; a number that is already in the sheet is never added twice.</p>' +
+        '<div style="display:flex;gap:8px"><input id="auCopy" placeholder="https://docs.google.com/spreadsheets/d/…  (link of the COPY)" style="flex:1"><button class="btn primary" id="auLook">🔍 Look in copy</button></div>' +
+        '<div id="auRecMsg" class="hint" style="margin-top:6px"></div><div id="auPrev"></div></div>' : '') +
       '<p class="hint">❌ LOST / ❓ NOT IN SHEET = re-enter it from the printed slip (or, for sales before today\'s update, find it in File → Version history of the Google Sheet). ' +
       '⏳ WAITING = open the dashboard on that computer and click ⟳ Sync. ○ NOT USED = a number a computer reserved but has not used yet — nothing is missing.' + (r.saveLog ? '' : ' · The Save Log starts with this update, so "↩ Put back" works for sales saved from now on.') + '</p>';
     $('auBody').querySelectorAll('[data-rs]').forEach(b => b.onclick = async () => {
@@ -2200,20 +2201,47 @@ async function openAudit(){
       catch (e){ toast('Failed: ' + (e.message || e), true); b.disabled = false; b.textContent = '↩ Put back'; }
     });
   };
+  let PREV = null;
+  $('auBody').addEventListener('change', e => {
+    if (e.target.id === 'auAll') $('auBody').querySelectorAll('.auPick').forEach(c => c.checked = e.target.checked);
+    if (e.target.id === 'auPvAll') $('auBody').querySelectorAll('.auPv').forEach(c => c.checked = e.target.checked);
+    if (e.target.matches('.auPv') || e.target.id === 'auPvAll'){ const n = $('auBody').querySelectorAll('.auPv:checked').length; const b = $('auRec'); if (b){ b.textContent = '↩ Restore selected (' + n + ')'; b.disabled = !n; } }
+  });
   $('auBody').addEventListener('click', async e => {
-    if (!e.target.closest('#auRec')) return;
-    const url = $('auCopy').value.trim(); if (!url) return toast('Paste the link of the copy first.', true);
-    const want = [...$('auBody').querySelectorAll('tr[data-miss]')].map(t => t.dataset.miss);
-    const b = $('auRec'); b.disabled = true; b.innerHTML = '<span class="spin sm"></span> Restoring…';
-    try {
-      const x = await api('recoverFromCopy', url, want);
-      $('auRecMsg').innerHTML = '<b style="color:#2e7d32">Put back ' + x.restoredSales + ' sale(s) (' + x.restoredLines + ' line(s)) from "' + esc(x.copyName) + '"</b>' +
-        (x.restored.length ? ': ' + esc(x.restored.join(', ')) : '') +
-        (x.notInCopy.length ? '<br><b style="color:#a01c1c">Not in this copy (' + x.notInCopy.length + '):</b> ' + esc(x.notInCopy.join(', ')) + ' — try a copy of an EARLIER or LATER version, or re-enter from the printed slips.' : '');
-      toast('Restored ' + x.restoredSales + ' sale(s) ✓'); load(true, true);
-      setTimeout(run, 2500);
-    } catch (err){ $('auRecMsg').innerHTML = '<b style="color:#a01c1c">' + esc(err.message || err) + '</b>'; }
-    b.disabled = false; b.textContent = '↩ Restore';
+    if (e.target.closest('#auLook')){
+      const url = $('auCopy').value.trim(); if (!url) return toast('Paste the link of the copy first.', true);
+      const want = [...$('auBody').querySelectorAll('.auPick:checked')].map(c => c.value);
+      if (!want.length) return toast('Tick at least one control number above.', true);
+      const b = $('auLook'); b.disabled = true; b.innerHTML = '<span class="spin sm"></span> Looking…'; $('auRecMsg').innerHTML = ''; $('auPrev').innerHTML = '';
+      try {
+        const x = await api('recoverFromCopy', url, want, true); PREV = {url, x};
+        $('auPrev').innerHTML = (x.sales.length
+          ? '<p style="margin:10px 0 6px"><b>Found in "' + esc(x.copyName) + '": ' + x.sales.length + ' sale(s)</b> — tick the ones to put back:</p>' +
+            '<div class="tablewrap" style="max-height:40vh"><table><thead><tr><th style="width:30px"><input type="checkbox" id="auPvAll" checked style="width:auto"></th><th>Control No.</th><th>Date</th><th>Customer</th><th>Rep</th><th>Products</th><th class="n">Lines</th><th class="n">Amount</th></tr></thead><tbody>' +
+            x.sales.map(v => '<tr><td><input type="checkbox" class="auPv" value="' + esc(v.ctrl) + '" checked style="width:auto"></td><td><b>' + esc(v.ctrl) + '</b></td><td>' + esc(v.date ? fmtDate(v.date) : '') + '</td><td><b>' + esc(v.customer) + '</b><br><span class="hint">' + esc(v.category) + '</span></td><td>' + esc(v.rep) + '</td><td>' + esc(v.products.join(', ')) + '</td><td class="n">' + v.lines + '</td><td class="n">' + peso(v.amount) + '</td></tr>').join('') +
+            '</tbody></table></div><div style="margin-top:8px;display:flex;gap:8px;align-items:center"><button class="btn primary" id="auRec">↩ Restore selected (' + x.sales.length + ')</button><span class="hint">Adds only the ticked sales at the end of the sales tab.</span></div>'
+          : '<p style="color:#a01c1c;font-weight:700;margin:10px 0 0">None of the ticked numbers are in this copy — try a copy of an earlier or later version.</p>') +
+          (x.notInCopy.length ? '<p class="hint" style="margin-top:6px"><b>Not in this copy (' + x.notInCopy.length + '):</b> ' + esc(x.notInCopy.join(', ')) + '</p>' : '') +
+          (x.alreadyThere.length ? '<p class="hint"><b>Already in the sheet:</b> ' + esc(x.alreadyThere.join(', ')) + '</p>' : '');
+      } catch (err){ $('auRecMsg').innerHTML = '<b style="color:#a01c1c">' + esc(err.message || err) + '</b>'; }
+      b.disabled = false; b.textContent = '🔍 Look in copy';
+      return;
+    }
+    if (e.target.closest('#auRec')){
+      if (!PREV) return;
+      const pick = [...$('auBody').querySelectorAll('.auPv:checked')].map(c => c.value);
+      if (!pick.length) return toast('Tick the sales to put back.', true);
+      if (!confirm('Put back ' + pick.length + ' sale(s) at the end of the sales tab?\n\n' + pick.join(', ') + '\n\nNothing else in the sheet is changed.')) return;
+      const b = $('auRec'); b.disabled = true; b.innerHTML = '<span class="spin sm"></span> Restoring…';
+      try {
+        const x = await api('recoverFromCopy', PREV.url, pick);
+        $('auRecMsg').innerHTML = '<b style="color:#2e7d32">Put back ' + x.restoredSales + ' sale(s) (' + x.restoredLines + ' line(s)): ' + esc(x.restored.join(', ')) + '</b>' +
+          (x.alreadyThere.length ? '<br>Already in the sheet (skipped): ' + esc(x.alreadyThere.join(', ')) : '');
+        $('auPrev').innerHTML = ''; PREV = null;
+        toast('Restored ' + x.restoredSales + ' sale(s) ✓'); load(true, true);
+        setTimeout(run, 3000);
+      } catch (err){ $('auRecMsg').innerHTML = '<b style="color:#a01c1c">' + esc(err.message || err) + '</b>'; b.disabled = false; b.textContent = '↩ Restore selected'; }
+    }
   });
   $('auGo').onclick = run; $('auDate').onchange = run;
   run();
