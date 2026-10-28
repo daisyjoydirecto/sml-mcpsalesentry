@@ -643,9 +643,12 @@ function download(name, text, type){ const a = document.createElement('a'); a.hr
 
 /* ================= connection ================= */
 function conn(){ return {url: store('apiUrl') || DEFAULT_API_URL, key: store('apiKey') || ''}; }
-function offlineErr(){ const e = new Error('No internet connection — working offline.'); e.offline = true; return e; }
+function offlineErr(why){ const e = new Error(why || 'No internet connection — working offline.'); e.offline = true; return e; }
+/* Saving waits much longer than reading: a save makes Google recalculate the whole (large) workbook,
+   and saves from several people wait in line. Apps Script itself stops a run after 6 minutes. */
+const WRITE_FNS = {addSale: 1, updateRows: 1, deleteRow: 1, restoreTrash: 1, saveDeductions: 1, saveEmployees: 1};
 async function api(fn, ...args){
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) throw offlineErr();
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) throw offlineErr('This computer says it has no internet connection.');
   if (HAS_GAS) return new Promise((res, rej) => google.script.run.withSuccessHandler(res).withFailureHandler(e => { if (/network|failed to fetch|NetworkError/i.test(String(e && e.message || e))) rej(offlineErr()); else rej(e); })[fn](...args));
   const c = conn();
   if (SDVIEW) c.key = SDVIEW;           // share link: view-only key (server allows only the salary deduction ledger)
@@ -653,9 +656,15 @@ async function api(fn, ...args){
   let res, data;
   // stop waiting after 90 s (a stuck connection is treated like no internet: saved copy + Sync still work)
   const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
-  const timer = ac ? setTimeout(() => ac.abort(), 90000) : 0;
+  const waitMs = WRITE_FNS[fn] ? 300000 : 90000, t0 = Date.now();
+  const timer = ac ? setTimeout(() => ac.abort(), waitMs) : 0;
   try { res = await fetch(c.url, {method:'POST', body: JSON.stringify({key: c.key, fn, args, page: SDVIEW ? '' : location.origin + location.pathname}), signal: ac ? ac.signal : undefined}); }
-  catch (e){ clearTimeout(timer); throw offlineErr(); }
+  catch (e){
+    clearTimeout(timer);
+    const secs = Math.round((Date.now() - t0) / 1000);
+    if (ac && ac.signal.aborted) { const x = offlineErr('No answer from the Google Sheet after ' + Math.round(waitMs / 60000) + ' min — the sheet is very slow or busy. It may still finish saving; the dashboard checks again automatically.'); x.timeout = true; throw x; }
+    throw offlineErr('Could not reach the Google Sheet (connection dropped after ' + secs + ' s). Retrying automatically.');
+  }
   clearTimeout(timer);
   try { data = await res.json(); }
   catch (e){ throw new Error('The web app did not answer correctly. Make sure "Who has access" is "Anyone" and you deployed a new version.'); }
@@ -982,7 +991,7 @@ function pendingRows(){
 function needOnline(what){ if (ONLINE) return false; toast((what || 'This') + ' needs an internet connection.', true); return true; }
 /** Upload waiting sales one by one. quiet = background after a fast save (no full reload). */
 let UPLOADING = null;
-function uploadOutbox(quiet){ return UPLOADING || (UPLOADING = doUpload(quiet).finally(() => { UPLOADING = null; })); }
+function uploadOutbox(quiet){ if (UPLOADING) return UPLOADING; UPLOADING = doUpload(quiet).finally(() => { UPLOADING = null; try { pendBar(); } catch(e){} }); try { pendBar(); } catch(e){} return UPLOADING; }
 async function doUpload(quiet){
   let ok = 0, reload = false, failed = 0; const notes = [], tried = new Set();
   await saveOutbox();   // pick up sales waiting in other tabs of this browser too
@@ -1000,7 +1009,12 @@ async function doUpload(quiet){
       ROWS = ROWS.filter(x => !x._pending).concat(pendingRows());
       renderDay(); if (summaryVisible()) renderSummary(); updateNet();
     } catch (e){
-      if (e.offline){ setOnline(false); if (!quiet) toast('Still offline — ' + OUTBOX.length + ' sale(s) waiting on this device.', true); break; }
+      if (e.offline){
+        sale.err = String(e.message || e).slice(0, 200); sale.tries = (sale.tries || 0) + 1; sale.lastTry = Date.now(); await saveOutbox();
+        if (!e.timeout) setOnline(false);
+        if (!quiet) toast(sale.err + ' — ' + OUTBOX.length + ' sale(s) waiting on this device.', true);
+        break;
+      }
       // a problem with THIS sale: keep it, note why, and go on with the next one (one bad sale must not hold back the others)
       sale.err = String(e.message || e).slice(0, 200); sale.tries = (sale.tries || 0) + 1; sale.lastTry = Date.now(); failed++;
       await saveOutbox();
@@ -1038,7 +1052,7 @@ function pendBar(){
     const err = (OUTBOX.find(x => x.err) || {}).err;
     el.className = 'pendbar';
     el.innerHTML = '⚠ ' + n + ' sale(s) on this computer are NOT yet saved in the Google Sheet — keep this page open' +
-      '<span class="pl">' + esc(OUTBOX.slice(0, 8).map(x => (x.control || 'PENDING') + ' ' + ((x.rows[0] || {}).customer || '')).join(' · ')) + (n > 8 ? ' …' : '') + (err ? ' · Reason: ' + esc(err) : '') + '</span>' +
+      '<span class="pl">' + esc(OUTBOX.slice(0, 8).map(x => (x.control || 'PENDING') + ' ' + ((x.rows[0] || {}).customer || '')).join(' · ')) + (n > 8 ? ' …' : '') + (err ? ' · Reason: ' + esc(err) : (UPLOADING ? ' · uploading now…' : '')) + (OUTBOX[0] && OUTBOX[0].lastTry ? ' · last try ' + esc(hhmm(OUTBOX[0].lastTry)) + ' (' + (OUTBOX[0].tries || 0) + 'x)' : '') + '</span>' +
       '<button id="pendRetry">⟳ Upload now</button>';
     $('pendRetry').onclick = () => syncNow();
   } else if (others.length){
@@ -1335,6 +1349,8 @@ function clearForm(){
 }
 async function saveSale(){
   if (custTimer){ clearTimeout(custTimer); custTimer = null; onCustomer(); }   // finish the name check first
+  const sd = $('eDate').value, td = todayISO();
+  if (sd && sd !== td && !confirm('⚠ The DATE of this sale is ' + fmtDate(sd) + ' — NOT today (' + fmtDate(td) + ').\n\nIt will be recorded and counted under ' + fmtDate(sd) + '.\n\nOK = save with ' + fmtDate(sd) + '     Cancel = go back and change the date')) { $('eDate').focus(); return; }
   const b = buildRows();
   if (b.errs) return showCheck(b.errs, b.creditErr);
   const btn = $('btnSave'); btn.disabled = true; btn.textContent = 'Saving…';
@@ -2808,7 +2824,15 @@ $('ePaid').addEventListener('change', () => {
 });
 $('ePayVia').addEventListener('change', () => { syncSplit(); if ($('ePayVia').value === 'HYB') $('eQRAmt').focus(); });
 $('eQRAmt').addEventListener('input', syncSplit);
-$('eDate').addEventListener('change', () => { $('dDate').value = $('eDate').value; renderDay(); onCustomer(true); });
+$('eDate').addEventListener('change', () => { DATE_AUTO = $('eDate').value === todayISO(); $('dDate').value = $('eDate').value; renderDay(); onCustomer(true); });
+/* The sale date follows the calendar: a dashboard left open overnight moves to the new day by itself
+   (unless someone picked another date on purpose). */
+var DATE_AUTO = true, DATE_TODAY = todayISO();
+setInterval(() => {
+  const t = todayISO(); if (t === DATE_TODAY) return;
+  const was = DATE_TODAY; DATE_TODAY = t;
+  if (DATE_AUTO || $('eDate').value === was){ $('eDate').value = t; DATE_AUTO = true; if ($('dDate').value === was){ $('dDate').value = t; renderDay(); } onCustomer(true); toast('New day — the sale date is now ' + fmtDate(t)); }
+}, 30000);
 $('eRep').addEventListener('change', () => store('rep', $('eRep').value));
 $('ePrintAfter').checked = store('printAfter') !== '0';
 $('ePrintAfter').addEventListener('change', () => store('printAfter', $('ePrintAfter').checked ? '1' : '0'));
