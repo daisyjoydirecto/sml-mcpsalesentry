@@ -534,7 +534,7 @@
         <h2 style="margin:0;flex:1;min-width:260px">Daily purchases per item — Walk-in · Volume · Salary deduct</h2>
         <div class="vtabs"><button class="btn sm active" data-iv="day">Per day</button><button class="btn sm" data-iv="period">Whole period</button></div>
         <input id="itQ" placeholder="Search item…" style="width:180px">
-        <button class="btn sm" id="itCsv">Export CSV</button><button class="btn sm primary" id="itPrint">🖨 Print</button>
+        <button class="btn sm" id="itCsv">⬇ Download Excel</button><button class="btn sm primary" id="itPrint">🖨 Print</button>
       </div>
       <div class="hint" id="itRange" style="padding:0 14px 8px">Use the From / To dates at the top to pick the days.</div>
       <div style="overflow:auto;max-height:70vh"><table class="daily itemrep" id="itemTable"></table></div>
@@ -2727,7 +2727,7 @@ function renderItems(){
     '<tr>' + ITYPES.map(([, , c]) => '<th class="' + c + '">Qty (kg)</th><th class="' + c + '">Amount (₱)</th>').join('') + '<th class="hTot">Qty (kg)</th><th class="hTot">Amount (₱)</th></tr></thead><tbody>' +
     (body || '<tr><td class="l muted" colspan="9" style="text-align:center;padding:16px">No sales in the selected dates.</td></tr>') +
     (ITEM_ROWS.length ? '<tr class="tot"><td class="l">GRAND TOTAL' + (ITEM_VIEW === 'day' && days.length > 1 ? ' (' + days.length + ' days)' : '') + '</td>' + cells(grand) + '</tr>' : '') + '</tbody>';
-  $('itRange').textContent = (f.from || f.to ? fmtDate(f.from || DATA_SINCE || '') + ' – ' + fmtDate(f.to || todayISO()) : 'All loaded dates') +
+  $('itRange').textContent = (f.from || f.to ? (f.from || DATA_SINCE ? fmtDate(f.from || DATA_SINCE) : 'Start') + ' – ' + fmtDate(f.to || todayISO()) : 'All loaded dates') +
     ([f.rep, f.cat, f.prod].filter(Boolean).length ? ' · filtered: ' + [f.rep, f.cat, f.prod].filter(Boolean).join(', ') : '') + ' · change the dates with From / To at the top';
 }
 function exportItems(){
@@ -2736,6 +2736,64 @@ function exportItems(){
   const lines = [head.map(q).join(',')].concat(ITEM_ROWS.map(([d, n, e]) => [d === 'ALL' ? 'Whole period' : slashDate(d), n].concat(...ITYPES.map(([k]) => [r2(e[k].kg), r2(e[k].amt)]))
     .concat([r2(ITYPES.reduce((a, [k]) => a + e[k].kg, 0)), r2(ITYPES.reduce((a, [k]) => a + e[k].amt, 0))]).map(q).join(',')));
   download('purchases-per-item-' + ($('sFrom').value || 'all') + '_' + ($('sTo').value || todayISO()) + '.csv', '\ufeff' + lines.join('\n'), 'text/csv');
+}
+/** Excel file that looks like the report on screen (colours, merged headers, day blocks, totals). */
+async function exportItemsXlsx(){
+  if (!ITEM_ROWS.length) return toast('Nothing to download for these dates.', true);
+  toast('Preparing the Excel file…');
+  await needExcelJS();
+  const s = settings(), wb = new ExcelJS.Workbook(), ws = wb.addWorksheet('Purchases per item', {views: [{state: 'frozen', ySplit: 5}], pageSetup: {orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9}});
+  ws.columns = [{width: 58}].concat(Array(8).fill({width: 14}));
+  const fill = c => ({type: 'pattern', pattern: 'solid', fgColor: {argb: 'FF' + c}});
+  const thin = {style: 'thin', color: {argb: 'FFDCDCDC'}}, box = {top: thin, left: thin, bottom: thin, right: thin};
+  const KG = '#,##0.00#;-#,##0.00#;"-"', MONEY = '"₱"#,##0.00;-"₱"#,##0.00;"-"';
+  const COL = {walk: '5C8000', vol: '1F4FA8', sd: 'B45309', tot: '1A1A1A'};
+  ws.mergeCells('A1:I1'); ws.getCell('A1').value = s.company || 'M. Montesclaros Farms Inc.'; ws.getCell('A1').font = {bold: true, size: 13};
+  ws.mergeCells('A2:I2'); ws.getCell('A2').value = 'DAILY PURCHASES PER ITEM — WALK-IN · VOLUME · SALARY DEDUCT'; ws.getCell('A2').font = {bold: true, size: 12};
+  ws.mergeCells('A3:I3'); ws.getCell('A3').value = $('itRange').textContent.split(' · change')[0] + ' · ' + (ITEM_VIEW === 'day' ? 'per day' : 'whole period') + ($('itQ').value.trim() ? ' · item: ' + $('itQ').value.trim() : ''); ws.getCell('A3').font = {size: 10, color: {argb: 'FF555555'}};
+  // two header rows
+  ws.mergeCells('A4:A5'); ws.mergeCells('B4:C4'); ws.mergeCells('D4:E4'); ws.mergeCells('F4:G4'); ws.mergeCells('H4:I4');
+  const h4 = ws.getRow(4), h5 = ws.getRow(5);
+  h4.getCell(1).value = 'Item'; h4.getCell(2).value = 'WALK-IN'; h4.getCell(4).value = 'VOLUME BUYER'; h4.getCell(6).value = 'SALARY DEDUCT'; h4.getCell(8).value = 'TOTAL';
+  [2, 4, 6, 8].forEach(c => { h5.getCell(c).value = 'Qty (kg)'; h5.getCell(c + 1).value = 'Amount (₱)'; });
+  const colOf = c => c === 1 ? COL.tot : c <= 3 ? COL.walk : c <= 5 ? COL.vol : c <= 7 ? COL.sd : COL.tot;
+  [h4, h5].forEach(h => { for (let c = 1; c <= 9; c++){ const x = h.getCell(c); x.fill = fill(colOf(c)); x.font = {bold: true, color: {argb: 'FFFFFFFF'}}; x.alignment = {horizontal: 'center', vertical: 'middle'}; x.border = box; } });
+  h4.height = 20; h5.height = 18;
+  const vals = e => [].concat(...ITYPES.map(([k]) => [r2(e[k].kg) || 0, r2(e[k].amt) || 0])).concat([r2(ITYPES.reduce((a, [k]) => a + e[k].kg, 0)), r2(ITYPES.reduce((a, [k]) => a + e[k].amt, 0))]);
+  const addLine = (label, e, style) => {
+    const row = ws.addRow([label].concat(vals(e)));
+    row.eachCell({includeEmpty: true}, (x, c) => {
+      if (c > 9) return; x.border = box;
+      if (c > 1){ x.numFmt = c % 2 === 0 ? KG : MONEY; x.alignment = {horizontal: 'right'}; }
+      if (c >= 8) x.font = {bold: true};
+      if (style === 'sub'){ x.fill = fill('F6F6F6'); x.font = {bold: true}; }
+      if (style === 'grand'){ x.fill = fill('F1F7DC'); x.font = {bold: true}; x.border = Object.assign({}, box, {top: {style: 'medium'}}); }
+    });
+  };
+  const blank = () => ({walk: {kg: 0, amt: 0}, vol: {kg: 0, amt: 0}, sd: {kg: 0, amt: 0}});
+  const add = (t, e) => ITYPES.forEach(([k]) => { t[k].kg += e[k].kg; t[k].amt += e[k].amt; });
+  const grand = blank(); let day = null, sub = null, nDays = 0;
+  const closeDay = () => { if (day && ITEM_VIEW === 'day') addLine('Total ' + slashDate(day), sub, 'sub'); };
+  ITEM_ROWS.forEach(([d, name, e]) => {
+    if (d !== day){
+      closeDay(); day = d; sub = blank(); nDays++;
+      if (ITEM_VIEW === 'day'){
+        const n = ITEM_ROWS.filter(x => x[0] === d).length;
+        const hr = ws.addRow([slashDate(d) + ' · ' + DAYS[new Date(d + 'T00:00:00').getDay()] + ' · ' + n + ' item(s)']);
+        ws.mergeCells('A' + hr.number + ':I' + hr.number);
+        hr.getCell(1).fill = fill('EEF4E2'); hr.getCell(1).font = {bold: true}; hr.getCell(1).border = box; hr.height = 18;
+      }
+    }
+    addLine(name, e); add(sub, e); add(grand, e);
+  });
+  closeDay();
+  addLine('GRAND TOTAL' + (ITEM_VIEW === 'day' && nDays > 1 ? ' (' + nDays + ' days)' : ''), grand, 'grand');
+  ws.addRow([]);
+  const ft = ws.addRow(['Sales Meat & Livestock · Walk-in / Volume / Salary deduct · downloaded ' + new Date().toLocaleString('en-PH')]); ft.getCell(1).font = {size: 8, color: {argb: 'FF777777'}};
+  const buf = await wb.xlsx.writeBuffer();
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([buf], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}));
+  a.download = 'purchases-per-item-' + ($('sFrom').value || 'all') + '_' + ($('sTo').value || todayISO()) + (ITEM_VIEW === 'period' ? '-period' : '') + '.xlsx'; a.click();
+  toast('Excel file downloaded ✓');
 }
 function printItems(){
   const s = settings();
@@ -3072,7 +3130,7 @@ $('btnSettings').onclick = openSettings;
 $('btnTrash').onclick = openTrash;
 $('btnSafe').onclick = openSafeBox;
 document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => { ITEM_VIEW = b.dataset.iv; document.querySelectorAll('[data-iv]').forEach(x => x.classList.toggle('active', x === b)); renderItems(); });
-$('itQ').oninput = renderItems; $('itCsv').onclick = exportItems; $('itPrint').onclick = printItems;
+$('itQ').oninput = renderItems; $('itCsv').onclick = () => exportItemsXlsx().catch(e => toast('Download failed: ' + (e.message || e), true)); $('itPrint').onclick = printItems;
 
 $('eLimitsBtn').onclick = openLimits;
 // text size: 50% (default) · 75% · 100% — remembered on this computer
