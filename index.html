@@ -394,6 +394,7 @@
     <span class="fsz" title="Text size"><button class="btn ghost" data-fs="-1">A−</button><button class="btn ghost" data-fs="0" id="fsLabel">50%</button><button class="btn ghost" data-fs="1">A+</button></span>
     <span class="net on" id="netPill">● Online</span>
     <button class="btn ghost" id="btnRefresh" title="Upload sales saved offline and reload from the Google Sheet">⟳ Sync</button>
+    <button class="btn ghost" id="btnSafe" title="Safe box — sales that could not be saved to the sheet">🛟</button>
     <button class="btn ghost" id="btnTrash" title="Trash — deleted lines can be restored">🗑</button>
     <button class="btn ghost" id="btnSettings" title="Settings">⚙</button>
     <a class="btn ghost hidden" id="lnkSheet" target="_blank" style="text-decoration:none">Sheet ↗</a>
@@ -1020,7 +1021,11 @@ async function doUpload(quiet){
       await saveOutbox();
     }
   }
-  if (failed) toast('⚠ ' + failed + ' sale(s) could NOT be saved to the sheet yet: ' + (OUTBOX.find(x => x.err) || {}).err + ' — retrying automatically.', true);
+  const stuck = OUTBOX.filter(x => x.err && (x.tries || 0) >= 1);
+  if (stuck.length) askUnsaved(stuck);
+  // nobody answered and it still fails after 3 tries → put it in the Safe box automatically (if the server can be reached)
+  const auto = OUTBOX.filter(x => x.err && (x.tries || 0) >= 3);
+  if (auto.length && !$('modalRoot').innerHTML) parkNow(auto, true);
   reportPending();
   updateNet();
   if (notes.length) toast('Control no. changed — please REPRINT: ' + notes.join(', '), true);
@@ -1041,7 +1046,83 @@ function reportPending(){
   if (sig === LAST_REPORT) return;
   api('reportPending', DEVICE, store('rep') || '', list).then(() => { LAST_REPORT = sig; }).catch(() => {});
 }
-let OTHER_PEND = {};
+let OTHER_PEND = {}, PARKED = 0, ASKED = new Set();
+/* ===== a sale could not be saved: never lose it ===== */
+/** Put waiting sales in the online Safe box (hidden "Unsaved Sales" tab). They leave this computer only after the server confirms. */
+async function parkNow(list, quiet){
+  list = (list || []).filter(x => x && x.rows && x.rows.length);
+  if (!list.length) return 0;
+  try {
+    const r = await api('parkSales', DEVICE, store('rep') || '', list.map(x => ({uid: x.uid, control: x.control || '', rows: x.rows, err: x.err || ''})));
+    const ok = new Set(r.parked || []);
+    ok.forEach(u => markGone(u));
+    OUTBOX = OUTBOX.filter(x => !ok.has(x.uid)); await saveOutbox();
+    ROWS = ROWS.filter(r => !r._pending).concat(pendingRows()); renderDay(); updateNet();
+    PARKED += ok.size; pendBar(); reportPending();
+    toast('🛟 ' + ok.size + ' sale(s) saved in the Safe box ✓ — open 🛟 Safe box to put them in the sheet');
+    return ok.size;
+  } catch (e){
+    if (!quiet) toast('Could not reach the Safe box either (' + (e.message || e) + '). Download a 💾 Backup file to be safe.', true);
+    return 0;
+  }
+}
+/** Download waiting sales as a file — open it later with 🔎 Find missing entries → 📄 Import slips file (any computer). */
+function backupFile(list){
+  list = list || OUTBOX;
+  if (!list.length) return toast('Nothing to back up.', true);
+  const doc = {kind: 'sml-backup', made: new Date().toISOString(), computer: DEVICE, sales: list.map(x => ({uid: x.uid, control: x.control || '', rows: x.rows, err: x.err || ''}))};
+  download('UNSAVED-sales-' + DEVICE + '-' + todayISO() + '.json', JSON.stringify(doc, null, 1), 'application/json');
+  toast('💾 Backup file downloaded — keep it until the sales are in the sheet');
+}
+/** Ask the user what to do with a sale that could not be saved (once per sale). */
+function askUnsaved(list){
+  list = list.filter(x => !ASKED.has(x.uid)); if (!list.length || $('modalRoot').innerHTML) return;
+  list.forEach(x => ASKED.add(x.uid));
+  const tot = x => x.rows.reduce((a, r) => a + num(r.amount), 0);
+  $('modalRoot').innerHTML = '<div class="overlay"><div class="modal" style="max-width:640px;border:3px solid #c62828"><div class="mh" style="background:#c62828"><h3>⚠ NOT SAVED to the Google Sheet</h3></div><div class="body">' +
+    '<p style="margin-top:0;font-weight:700">' + list.length + ' sale(s) could not be saved to the sheet:</p><ul style="margin:0 0 8px 18px">' +
+    list.map(x => '<li><b>' + esc(x.control || 'PENDING') + '</b> · ' + esc((x.rows[0] || {}).customer || '') + ' · ' + peso(tot(x)) + '</li>').join('') + '</ul>' +
+    '<p class="hint" style="margin:0 0 10px">Reason: ' + esc(list[0].err || 'no answer from the sheet') + '</p>' +
+    '<p style="margin:0 0 12px;color:#8a1616"><b>They are only on THIS computer.</b> If you close this page, clear the browser or use another computer, they can be lost. Choose how to keep them safe:</p>' +
+    '<div style="display:grid;gap:8px">' +
+    '<button class="btn primary" id="unSafe" style="text-align:left;padding:10px 14px">🛟 <b>Put in the Safe box</b> (recommended)<br><span style="font-weight:400">Saved online right away. Anyone can then put it in the sheet from 🛟 Safe box.</span></button>' +
+    '<button class="btn" id="unFile" style="text-align:left;padding:10px 14px">💾 <b>Download a backup file</b><br><span style="font-weight:400">A file you can import later from any computer (🔎 Find missing entries → 📄 Import).</span></button>' +
+    '<button class="btn" id="unKeep" style="text-align:left;padding:10px 14px">🔁 <b>Keep trying on this computer</b><br><span style="font-weight:400">Retries every 20 seconds. Keep this page open until the red bar disappears.</span></button>' +
+    '</div></div></div></div>';
+  $('unSafe').onclick = async () => { $('unSafe').disabled = true; $('unSafe').innerHTML = '<span class="spin sm"></span> Saving to the Safe box…'; const n = await parkNow(list); $('modalRoot').innerHTML = ''; if (!n){ backupFile(list); } };
+  $('unFile').onclick = () => { backupFile(list); $('modalRoot').innerHTML = ''; };
+  $('unKeep').onclick = () => { $('modalRoot').innerHTML = ''; toast('OK — still trying. Do not close this page while the red bar shows.'); };
+}
+/** 🛟 Safe box: parked sales — tick and put them in the sales tab. */
+async function openSafeBox(){
+  if (needOnline('The Safe box')) return;
+  $('modalRoot').innerHTML = '<div class="overlay big"><div class="modal xl"><div class="mh"><h3>🛟 Safe box — sales not yet in the sheet</h3><button class="btn ghost sm" data-x>✕</button></div><div class="body" id="sbBody"><p class="hint"><span class="spin sm"></span> Loading…</p></div></div></div>';
+  $('modalRoot').querySelector('[data-x]').onclick = () => $('modalRoot').innerHTML = '';
+  let items;
+  try { items = await api('listParked'); }
+  catch (e){ $('sbBody').innerHTML = '<p style="color:#a01c1c;font-weight:700">' + esc(e.message || e) + (/Unknown action/i.test(e.message || '') ? ' — deploy Code.gs v32.' : '') + '</p>'; return; }
+  PARKED = items.length; pendBar();
+  if (!items.length){ $('sbBody').innerHTML = '<p class="hint" style="padding:20px;text-align:center">The Safe box is empty — every sale is in the sheet. ✓</p>'; return; }
+  $('sbBody').innerHTML = '<div class="toolbar" style="margin-bottom:8px"><label style="display:flex;gap:6px;align-items:center;margin:0;text-transform:none;letter-spacing:0"><input type="checkbox" id="sbAll" checked style="width:auto"> Select all</label><span style="flex:1"></span>' +
+    '<button class="btn sm" id="sbDrop" style="color:#a01c1c">Remove from Safe box</button><button class="btn primary" id="sbGo">⬆ Put selected in the sheet</button></div>' +
+    '<div class="tablewrap" style="max-height:60vh"><table><thead><tr><th></th><th>Parked</th><th>Control</th><th>Sale date</th><th>Customer</th><th>Products</th><th class="n">Amount</th><th>Why it was not saved</th></tr></thead><tbody>' +
+    items.map(x => '<tr' + (x.inSheet ? ' style="opacity:.55"' : '') + '><td><input type="checkbox" class="sbPick" value="' + esc(x.uid) + '"' + (x.inSheet ? '' : ' checked') + ' style="width:auto"></td><td class="hint">' + esc(x.at) + '<br>' + esc(x.who || '') + ' · ' + esc(x.computer) + '</td><td><b>' + esc(x.control) + '</b></td><td>' + esc(x.date ? fmtDate(x.date) : '') + '</td><td><b>' + esc(x.customer) + '</b></td><td>' + esc(x.products.join(', ')) + '</td><td class="n">' + peso(x.total) + '</td><td class="hint">' + (x.inSheet ? '<b style="color:#2e7d32">✔ already in the sheet — safe to remove</b>' : esc(x.reason)) + '</td></tr>').join('') +
+    '</tbody></table></div><p class="hint">"Put in the sheet" adds each ticked sale at the end of the sales tab with its printed control number (sales without one get the next number). A sale already in the sheet is never added twice.</p>';
+  const picked = () => [...document.querySelectorAll('.sbPick:checked')].map(c => c.value);
+  $('sbAll').onchange = e => document.querySelectorAll('.sbPick').forEach(c => c.checked = e.target.checked);
+  $('sbGo').onclick = async () => {
+    const u = picked(); if (!u.length) return toast('Tick the sales to put in the sheet.', true);
+    $('sbGo').disabled = true; $('sbGo').innerHTML = '<span class="spin sm"></span> Saving…';
+    try { const r = await api('importParked', u); toast('✔ Put ' + r.added.length + ' sale(s) in the sheet' + (r.skipped.length ? ' · ' + r.skipped.length + ' were already there' : '')); load(true, true); openSafeBox(); }
+    catch (e){ toast('Could not save yet: ' + (e.message || e) + ' — they stay in the Safe box, try again later.', true); $('sbGo').disabled = false; $('sbGo').textContent = '⬆ Put selected in the sheet'; }
+  };
+  $('sbDrop').onclick = async () => {
+    const u = picked(); if (!u.length) return toast('Tick the sales to remove.', true);
+    if (!confirm('Remove ' + u.length + ' sale(s) from the Safe box WITHOUT putting them in the sheet?\n\nOnly do this if they are already in the sheet or were entered again.')) return;
+    if (!(await askPin('Remove from Safe box'))) return;
+    try { await api('dropParked', u); toast('Removed'); openSafeBox(); } catch (e){ toast('Failed: ' + (e.message || e), true); }
+  };
+}
 const hhmm = t => t ? new Date(t).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : '';
 /** Red bar under the header: sales printed on THIS computer but not yet in the sheet; orange: waiting on OTHER computers. */
 function pendBar(){
@@ -1053,8 +1134,14 @@ function pendBar(){
     el.className = 'pendbar';
     el.innerHTML = '⚠ ' + n + ' sale(s) on this computer are NOT yet saved in the Google Sheet — keep this page open' +
       '<span class="pl">' + esc(OUTBOX.slice(0, 8).map(x => (x.control || 'PENDING') + ' ' + ((x.rows[0] || {}).customer || '')).join(' · ')) + (n > 8 ? ' …' : '') + (err ? ' · Reason: ' + esc(err) : (UPLOADING ? ' · uploading now…' : '')) + (OUTBOX[0] && OUTBOX[0].lastTry ? ' · last try ' + esc(hhmm(OUTBOX[0].lastTry)) + ' (' + (OUTBOX[0].tries || 0) + 'x)' : '') + '</span>' +
-      '<button id="pendRetry">⟳ Upload now</button>';
+      '<button id="pendRetry">⟳ Upload now</button><button id="pendSafe">🛟 Put in Safe box</button><button id="pendFile">💾 Backup file</button>';
     $('pendRetry').onclick = () => syncNow();
+    $('pendSafe').onclick = () => parkNow(OUTBOX.slice());
+    $('pendFile').onclick = () => backupFile(OUTBOX.slice());
+  } else if (PARKED > 0){
+    el.className = 'pendbar other';
+    el.innerHTML = '🛟 ' + PARKED + ' sale(s) are in the Safe box — saved online but NOT yet in the sales tab<button id="pendOpenSafe">Open Safe box</button>';
+    $('pendOpenSafe').onclick = openSafeBox;
   } else if (others.length){
     el.className = 'pendbar other';
     el.innerHTML = '⚠ Sales waiting on other computers (not yet in the sheet): <span class="pl">' +
@@ -1126,7 +1213,7 @@ async function load(silent, fresh){
       d = c.d; fromCache = true; CACHE_AT = c.at;
       if (!LISTS.rates.length && c.lists) applyLists(c.lists);
     }
-    if (d.config && !fromCache){ OTHER_PEND = d.config.pending || {}; }
+    if (d.config && !fromCache){ OTHER_PEND = d.config.pending || {}; PARKED = Number(d.config.parked) || 0; }
     if (d.config){ CAT = d.config.categories || CAT; SOURCE = d.config.source || SOURCE; CONTROL_FIELD = d.config.controlField || CONTROL_FIELD; if (d.config.sdRules) SD_RULES = Object.assign({limit: 0, cut: [15, 31], limits: {}, periods: [], balStart: ''}, d.config.sdRules); }
     ROWS = applyOverrides(d.rows.map(a => { const o = {_row: a[0]}; d.keys.forEach((k, i) => o[k] = a[i+1]); return enrich(o); }), !fromCache);
     $('lnkSheet').href = d.url; $('lnkSheet').classList.remove('hidden');
@@ -2169,7 +2256,7 @@ const AUDIT_LBL = {lost: ['❌ LOST', '#a01c1c'], unknown: ['❓ NOT IN SHEET', 
 async function openAudit(){
   if (needOnline('Finding missing entries')) return;
   const y = new Date(); y.setDate(y.getDate() - 1);
-  $('modalRoot').innerHTML = '<div class="overlay"><div class="modal wide"><div class="mh"><h3>🔎 Find missing entries</h3><button class="btn ghost sm" data-x>✕</button></div><div class="body">' +
+  $('modalRoot').innerHTML = '<div class="overlay"><div class="modal wide"><div class="mh"><h3>🔎 Find missing entries</h3><label class="btn sm" style="margin-left:auto;margin-right:8px;cursor:pointer">📄 Import slips file<input type="file" id="auFile" accept=".json" style="display:none"></label><button class="btn ghost sm" data-x>✕</button></div><div class="body">' +
     '<div class="toolbar" style="margin-bottom:8px"><b>Date</b><input type="date" id="auDate" style="width:auto" value="' + isoOf(y) + '"><button class="btn primary" id="auGo">Check</button><span class="hint">Checks every control number of that day against the sheet, the Trash, the Save Log and the computers</span></div>' +
     '<div id="auBody"></div></div></div></div>';
   $('modalRoot').querySelector('[data-x]').onclick = () => $('modalRoot').innerHTML = '';
@@ -2243,8 +2330,61 @@ async function openAudit(){
       } catch (err){ $('auRecMsg').innerHTML = '<b style="color:#a01c1c">' + esc(err.message || err) + '</b>'; b.disabled = false; b.textContent = '↩ Restore selected'; }
     }
   });
+  $('auFile').onchange = e => { const f = e.target.files[0]; if (f) openSlipImport(f); e.target.value = ''; };
   $('auGo').onclick = run; $('auDate').onchange = run;
   run();
+}
+/* ================= IMPORT re-typed slips (JSON made from the printed slips) ================= */
+function slipRows(x, date){
+  const cat = x.custCat || CAT.walkin, emp = cat === CAT.employee || /SALARY|DEDUC/i.test(cat);
+  const mode = emp ? CREDIT_MODE : x.via === 'QR' ? QR_MODE : x.via === 'COD' ? COD_MODE : CASH_MODE;
+  const remarks = emp ? '[' + (x.company || '') + ']' + (x.empNo ? ' EMP# ' + x.empNo : '') + (x.dept ? ' · ' + x.dept : '') + ' | re-entered from printed slip' : 're-entered from printed slip' + (x.note ? ' | ' + x.note : '');
+  return x.lines.map(l => {
+    const amt = r2(num(l.amount)), pay = !emp && x.paid ? amt : 0, bal = r2(amt - pay);
+    return {rep: x.rep, source: SOURCE, custCat: emp ? CAT.employee : cat, date, month: MONTHS[+date.slice(5,7) - 1], customer: x.customer,
+      particulars: l.particulars, prodCat: (rateFor(l.particulars, cat) || {}).prodCat || prodFrom(l.particulars), heads: l.heads || '', weight: num(l.weight),
+      rate: num(l.rate), amount: amt, payment: pay || '', withhold: false, balance: bal, mode, terms: emp ? '0' : '', dr: x.dr || '', inhouseDr: x.idr || '',
+      due: emp ? date : '', daysOverdue: '-', payStatus: bal <= 0.005 ? 'PAID' : emp ? 'NOT YET DUE' : 'UNPAID', remarks};
+  });
+}
+async function openSlipImport(file){
+  let doc;
+  try { doc = JSON.parse(await file.text()); } catch (e){ return toast('That file could not be read.', true); }
+  if (!doc || (doc.kind !== 'sml-slips' && doc.kind !== 'sml-backup') || !Array.isArray(doc.sales)) return toast('This is not a slips or backup file.', true);
+  const fromRows = s => { const r0 = s.rows[0] || {}, m = String(r0.remarks || '').match(/^\[([A-Z]+)\](?: EMP# (\S+))?/) || [];
+    return {customer: r0.customer, rep: r0.rep, custCat: r0.custCat, company: m[1] || '', empNo: m[2] || '', dr: r0.dr, idr: r0.inhouseDr, via: payVia(r0) === 'QR' ? 'QR' : 'CASH', paid: num(r0.payment) > 0,
+      printed: fmtDate(toISO(r0.date)), note: s.err ? 'Not saved: ' + s.err : '', lines: s.rows.map(r => ({particulars: r.particulars, weight: num(r.weight), amount: num(r.amount)}))}; };
+  const date = doc.kind === 'sml-backup' ? toISO((doc.sales[0] && doc.sales[0].rows[0] || {}).date) : doc.date;
+  const sales = doc.kind === 'sml-backup'
+    ? doc.sales.filter(s => s.rows && s.rows.length).map(s => ({x: fromRows(s), uid: s.uid, control: s.control || '', rows: s.rows, total: r2(s.rows.reduce((a, r) => a + num(r.amount), 0))}))
+    : doc.sales.map(x => ({x, control: x.control, rows: slipRows(x, date), total: r2(x.lines.reduce((a, l) => a + num(l.amount), 0))}));
+  $('modalRoot').innerHTML = '<div class="overlay big"><div class="modal xl"><div class="mh"><h3>📄 Import slips — ' + esc(longDate(date)) + ' (' + sales.length + ' slips)</h3><button class="btn ghost sm" data-x>✕</button></div><div class="body" id="siBody"><p class="hint"><span class="spin sm"></span> Checking which control numbers are already in the sheet…</p></div></div></div>';
+  $('modalRoot').querySelector('[data-x]').onclick = () => $('modalRoot').innerHTML = '';
+  let pv;
+  try { pv = await api('importSales', sales.map(v => ({uid: v.uid, control: v.control, rows: v.rows})), true); }
+  catch (e){ $('siBody').innerHTML = '<p style="color:#a01c1c;font-weight:700">' + esc(e.message || e) + (/Unknown action/i.test(e.message || '') ? ' — deploy Code.gs v31.' : '') + '</p>'; return; }
+  const ex = {}; pv.items.forEach((i, k) => ex[k] = i);
+  const miss = sales.filter((v, k) => !ex[k].exists).length;
+  $('siBody').innerHTML = '<p style="margin-top:0"><b style="color:#a01c1c">' + miss + ' not in the sheet</b> (ticked) · ' + (sales.length - miss) + ' already in the sheet (cannot be added again). Check each against the printed slip, untick any you do not want, then click Import.</p>' +
+    '<div class="toolbar" style="margin-bottom:6px"><label style="display:flex;gap:6px;align-items:center;margin:0;text-transform:none;letter-spacing:0"><input type="checkbox" id="siAll" checked style="width:auto"> Select all missing</label><span style="flex:1"></span><span id="siSum" class="hint"></span><button class="btn primary" id="siGo">⬆ Import selected</button></div>' +
+    '<div class="tablewrap" style="max-height:62vh"><table><thead><tr><th></th><th>Control</th><th>Printed</th><th>Customer</th><th>Category</th><th>DR / IDR</th><th>Products</th><th class="n">Amount</th><th>In sheet?</th></tr></thead><tbody>' +
+    sales.map((v, k) => { const x = v.x, e = ex[k]; return '<tr' + (e.exists ? ' style="opacity:.55"' : '') + '><td>' + (e.exists ? '' : '<input type="checkbox" class="siPick" value="' + k + '" checked style="width:auto">') + '</td><td><b>' + esc(v.control || 'NEW') + '</b></td><td class="hint">' + esc(x.printed || '') + '</td><td><b>' + esc(x.customer) + '</b><br><span class="hint">' + esc(x.rep) + '</span>' + (x.note ? '<br><span style="color:#a35400;font-weight:700">⚠ ' + esc(x.note) + '</span>' : '') + '</td><td>' + esc(/SALARY/.test(x.custCat) ? 'SALARY DEDUCT · ' + (x.company || '') + ' #' + (x.empNo || '') : x.custCat + ' · ' + (x.via === 'QR' ? 'QR' : 'Cash') + (x.paid ? ' · paid' : '')) + '</td><td>' + esc([x.dr ? 'DR ' + x.dr : '', x.idr ? 'IDR ' + x.idr : ''].filter(Boolean).join(' / ')) + '</td><td>' + esc(x.lines.map(l => l.particulars.replace(/^[^:]*:\s*/, '') + ' ' + l.weight + 'kg').join(', ')) + '</td><td class="n">' + peso(v.total) + '</td><td>' + (e.exists ? '✔ yes · row ' + e.sheet.row + (e.sheet.date !== date ? ' (dated ' + esc(e.sheet.date) + ')' : '') : '<b style="color:#a01c1c">✖ missing</b>') + '</td></tr>'; }).join('') +
+    '</tbody></table></div>';
+  const sum = () => { const p = [...document.querySelectorAll('.siPick:checked')].map(c => c.value); $('siSum').textContent = p.length + ' selected · ' + peso(sales.filter((v, k) => p.includes(String(k))).reduce((a, v) => a + v.total, 0)); $('siGo').disabled = !p.length; return p; };
+  $('siAll').onchange = e => { document.querySelectorAll('.siPick').forEach(c => c.checked = e.target.checked); sum(); };
+  $('siBody').addEventListener('change', e => { if (e.target.matches('.siPick')) sum(); });
+  sum();
+  $('siGo').onclick = async () => {
+    const pick = sum(); if (!pick.length) return;
+    if (!confirm('Add ' + pick.length + ' sale(s)' + ' at the end of the sales tab, with their printed control numbers?\n\nNothing else in the sheet is changed.')) return;
+    $('siGo').disabled = true; $('siGo').innerHTML = '<span class="spin sm"></span> Importing…';
+    try {
+      const r = await api('importSales', sales.filter((v, k) => pick.includes(String(k))).map(v => ({uid: v.uid, control: v.control, rows: v.rows})));
+      $('siBody').innerHTML = '<p style="font-size:1.1em;color:#2e7d32;font-weight:700">✔ Added ' + r.added.length + ' sale(s) · ' + r.lines + ' line(s)</p><p>' + esc(r.added.join(', ')) + '</p>' +
+        (r.skipped.length ? '<p class="hint">Already in the sheet (skipped): ' + esc(r.skipped.join(', ')) + '</p>' : '');
+      toast('Imported ' + r.added.length + ' sale(s) ✓'); load(true, true);
+    } catch (e){ toast('Import failed: ' + (e.message || e), true); $('siGo').disabled = false; $('siGo').textContent = '⬆ Import selected'; }
+  };
 }
 async function openTrash(){
   if (needOnline('The Trash')) return;
@@ -2861,6 +3001,7 @@ $('btnSdShare').onclick = () => openShare('sd');
 $('btnSdUpload').onclick = openSdUpload;
 $('btnSettings').onclick = openSettings;
 $('btnTrash').onclick = openTrash;
+$('btnSafe').onclick = openSafeBox;
 
 $('eLimitsBtn').onclick = openLimits;
 // text size: 50% (default) · 75% · 100% — remembered on this computer
