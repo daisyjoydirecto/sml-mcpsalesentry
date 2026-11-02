@@ -162,6 +162,12 @@
   .daily tr.tot td{background:var(--soft);font-weight:700}
   .daily tr.avg td{background:#f2f2f2;font-weight:700}
   .daily tr.shr td{background:#fafafa;font-weight:700}
+  .daily .hVol{background:#1f4fa8}.daily .hTot{background:#1a1a1a}
+  .itemrep tr.dayh td{background:#eef4e2;font-weight:700;text-align:left;font-family:var(--serif);position:sticky;top:0}
+  .itemrep tr.dsub td{background:#f6f6f6;font-weight:700}
+  .itemrep td.l{white-space:normal;min-width:240px}
+  .itemrep thead th{position:sticky;top:0;z-index:1}
+  .itemrep thead tr:nth-child(2) th{top:33px}
   .daily tr.today td{color:var(--olive);font-weight:700}
   .sgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
   .ltabs{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
@@ -523,7 +529,16 @@
       <div style="display:flex;align-items:center;padding:10px 14px"><h2 style="margin:0;flex:1">Daily sales — Cash vs Credit / Salary deduct</h2><button class="btn sm" id="btnDailyCsv">Export CSV</button></div>
       <div style="overflow:auto"><table class="daily" id="dailyTable"></table></div>
     </div>
-    <div class="sgrid" id="sumTables"></div>
+    <div class="card" id="itemCard" style="padding:0;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px">
+        <h2 style="margin:0;flex:1;min-width:260px">Daily purchases per item — Walk-in · Volume · Salary deduct</h2>
+        <div class="vtabs"><button class="btn sm active" data-iv="day">Per day</button><button class="btn sm" data-iv="period">Whole period</button></div>
+        <input id="itQ" placeholder="Search item…" style="width:180px">
+        <button class="btn sm" id="itCsv">Export CSV</button><button class="btn sm primary" id="itPrint">🖨 Print</button>
+      </div>
+      <div class="hint" id="itRange" style="padding:0 14px 8px">Use the From / To dates at the top to pick the days.</div>
+      <div style="overflow:auto;max-height:70vh"><table class="daily itemrep" id="itemTable"></table></div>
+    </div>
   </section>
 
   <!-- ================= RATES & LISTS ================= -->
@@ -2670,10 +2685,64 @@ function renderSummary(){
   };
   renderDaily(v, f);
   const empRows = v.filter(r => r.custCat === CAT.employee);
-  $('sumTables').innerHTML = table('By product category', v, r => r._prod) + table('By customer category', v, r => r.custCat) +
-    table('Employees by company', empRows, r => companyOf(r) || '(no company tag)') +
-    table('By representative', v, r => r.rep) + table('Daily totals', v, r => r._date, 0, true) +
-    table('Top 15 products', v, r => r.particulars, 15) + table('Top 15 customers', v, r => r.customer, 15);
+  ITEM_SRC = {v, f}; renderItems();
+}
+/* ---------- daily purchases per item, by customer type ---------- */
+let ITEM_SRC = {v: [], f: {}}, ITEM_VIEW = 'day', ITEM_ROWS = [];
+const ITYPES = [['walk', 'WALK-IN', 'hCash'], ['vol', 'VOLUME BUYER', 'hVol'], ['sd', 'SALARY DEDUCT', 'hCred']];
+function itemType(r){
+  if (r.custCat === CAT.employee || /SALARY|DEDUC|EMPLOYEE/i.test(r.custCat)) return 'sd';
+  if (r.custCat === CAT.volume || /VOLUME/i.test(r.custCat)) return 'vol';
+  return 'walk';
+}
+function renderItems(){
+  const {v, f} = ITEM_SRC, q = ($('itQ').value || '').trim().toLowerCase();
+  const list = v.filter(r => r._date && r.particulars && (!q || r.particulars.toLowerCase().includes(q)));
+  const blank = () => ({walk: {kg: 0, amt: 0}, vol: {kg: 0, amt: 0}, sd: {kg: 0, amt: 0}});
+  const groups = new Map();   // day (or 'ALL') -> Map(item -> totals)
+  list.forEach(r => {
+    const g = ITEM_VIEW === 'day' ? r._date : 'ALL';
+    if (!groups.has(g)) groups.set(g, new Map());
+    const m = groups.get(g), k = r.particulars;
+    if (!m.has(k)) m.set(k, blank());
+    const e = m.get(k)[itemType(r)]; e.kg += r._kg; e.amt += r._amt;
+  });
+  const K = x => x ? x.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 3}) : '-';
+  const P = x => x ? peso(x) : '-';
+  const sum = items => { const t = blank(); items.forEach(e => ITYPES.forEach(([k]) => { t[k].kg += e[k].kg; t[k].amt += e[k].amt; })); return t; };
+  const cells = e => ITYPES.map(([k]) => '<td>' + K(e[k].kg) + '</td><td>' + P(e[k].amt) + '</td>').join('') +
+    '<td><b>' + K(ITYPES.reduce((a, [k]) => a + e[k].kg, 0)) + '</b></td><td><b>' + P(ITYPES.reduce((a, [k]) => a + e[k].amt, 0)) + '</b></td>';
+  ITEM_ROWS = [];
+  let body = '';
+  const days = [...groups.keys()].sort();
+  days.forEach(d => {
+    const m = groups.get(d), items = [...m.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    if (ITEM_VIEW === 'day') body += '<tr class="dayh"><td colspan="9">' + esc(slashDate(d)) + ' · ' + DAYS[new Date(d + 'T00:00:00').getDay()] + ' · ' + items.length + ' item(s)</td></tr>';
+    items.forEach(([name, e]) => { body += '<tr><td class="l">' + esc(name) + '</td>' + cells(e) + '</tr>'; ITEM_ROWS.push([d, name, e]); });
+    if (ITEM_VIEW === 'day') body += '<tr class="dsub"><td class="l">Total ' + esc(slashDate(d)) + '</td>' + cells(sum(items.map(x => x[1]))) + '</tr>';
+  });
+  const grand = sum(ITEM_ROWS.map(x => x[2]));
+  $('itemTable').innerHTML =
+    '<thead><tr><th class="hAll" rowspan="2">Item</th>' + ITYPES.map(([, l, c]) => '<th class="' + c + '" colspan="2">' + l + '</th>').join('') + '<th class="hTot" colspan="2">TOTAL</th></tr>' +
+    '<tr>' + ITYPES.map(([, , c]) => '<th class="' + c + '">Qty (kg)</th><th class="' + c + '">Amount (₱)</th>').join('') + '<th class="hTot">Qty (kg)</th><th class="hTot">Amount (₱)</th></tr></thead><tbody>' +
+    (body || '<tr><td class="l muted" colspan="9" style="text-align:center;padding:16px">No sales in the selected dates.</td></tr>') +
+    (ITEM_ROWS.length ? '<tr class="tot"><td class="l">GRAND TOTAL' + (ITEM_VIEW === 'day' && days.length > 1 ? ' (' + days.length + ' days)' : '') + '</td>' + cells(grand) + '</tr>' : '') + '</tbody>';
+  $('itRange').textContent = (f.from || f.to ? fmtDate(f.from || DATA_SINCE || '') + ' – ' + fmtDate(f.to || todayISO()) : 'All loaded dates') +
+    ([f.rep, f.cat, f.prod].filter(Boolean).length ? ' · filtered: ' + [f.rep, f.cat, f.prod].filter(Boolean).join(', ') : '') + ' · change the dates with From / To at the top';
+}
+function exportItems(){
+  const q = x => '"' + String(x == null ? '' : x).replace(/"/g, '""') + '"';
+  const head = ['Date','Item'].concat(...ITYPES.map(([, l]) => [l + ' Qty (kg)', l + ' Amount'])).concat(['Total Qty (kg)','Total Amount']);
+  const lines = [head.map(q).join(',')].concat(ITEM_ROWS.map(([d, n, e]) => [d === 'ALL' ? 'Whole period' : slashDate(d), n].concat(...ITYPES.map(([k]) => [r2(e[k].kg), r2(e[k].amt)]))
+    .concat([r2(ITYPES.reduce((a, [k]) => a + e[k].kg, 0)), r2(ITYPES.reduce((a, [k]) => a + e[k].amt, 0))]).map(q).join(',')));
+  download('purchases-per-item-' + ($('sFrom').value || 'all') + '_' + ($('sTo').value || todayISO()) + '.csv', '\ufeff' + lines.join('\n'), 'text/csv');
+}
+function printItems(){
+  const s = settings();
+  $('printArea').innerHTML = '<div class="slip-page"><div class="ledger dprint"><div class="sh"><img src="' + (s.logo || DEFAULT_LOGO) + '" alt=""><div><b>' + esc(s.company) + '</b>' + esc(s.address) + '</div></div>' +
+    '<h2>DAILY PURCHASES PER ITEM</h2><div class="sub">' + esc($('itRange').textContent.split(' · change')[0]) + '</div><table class="daily itemrep">' + $('itemTable').innerHTML + '</table>' +
+    '<div class="foot"><span>Sales Meat &amp; Livestock · Walk-in / Volume / Salary deduct</span><span>Printed ' + new Date().toLocaleString('en-PH') + '</span></div></div></div>';
+  setTimeout(() => window.print(), 50);
 }
 /* ---------- daily Cash vs Credit / Salary-deduct analysis ---------- */
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -3002,6 +3071,8 @@ $('btnSdUpload').onclick = openSdUpload;
 $('btnSettings').onclick = openSettings;
 $('btnTrash').onclick = openTrash;
 $('btnSafe').onclick = openSafeBox;
+document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => { ITEM_VIEW = b.dataset.iv; document.querySelectorAll('[data-iv]').forEach(x => x.classList.toggle('active', x === b)); renderItems(); });
+$('itQ').oninput = renderItems; $('itCsv').onclick = exportItems; $('itPrint').onclick = printItems;
 
 $('eLimitsBtn').onclick = openLimits;
 // text size: 50% (default) · 75% · 100% — remembered on this computer
