@@ -2869,10 +2869,43 @@ function openDayDetail(day){
     (shared.length ? '<p style="margin:0 0 8px;padding:8px 10px;background:#fff4e5;border:1px solid #e0a040;color:#7a3e00"><b>⚠ ' + shared.length + ' control number(s) are used by more than one customer in the sheet</b> (usually copied / dragged down in the TAG # column): ' +
       shared.map(c => '<b>' + esc(c) + '</b> → ' + esc(byCtrl[c].join(', '))).join(' · ') + '. Each customer is still counted as its own sale, but please correct the TAG # in the sheet.</p>' : '') +
     (noCtrl ? '<p class="hint" style="margin:0 0 8px">' + noCtrl + ' sale(s) have no control number (typed directly in the sheet) — each customer counts as one sale.</p>' : '') +
+    '<div style="margin:0 0 8px"><button class="btn primary sm" id="ddCheck">🔍 Check this day against the Google Sheet</button> <span class="hint">reads the sheet directly and lists any rows the dashboard is missing</span></div><div id="ddRes"></div>' +
     '<div class="tablewrap" style="max-height:62vh"><table><thead><tr><th>Counted as</th><th>Control No.</th><th>Customer</th><th>Customer category (sheet)</th><th>Mode of payment (sheet)</th><th class="n">Lines</th><th class="n">Amount</th></tr></thead><tbody>' +
     list.map(x => '<tr' + (shared.includes(x.ctrl) ? ' style="background:#fff4e5"' : '') + '><td><b>' + esc(x.t) + '</b></td><td>' + esc(x.ctrl) + '</td><td>' + esc(x.customer) + (twice.has(key(x.customer)) ? ' <span class="hint" style="color:#a35400">(more than 1 sale today)</span>' : '') + '</td><td>' + esc([...x.cats].join(', ')) + '</td><td>' + esc([...x.modes].join(', ')) + '</td><td class="n">' + x.lines + '</td><td class="n">' + peso(x.amt) + '</td></tr>').join('') +
     '</tbody></table></div></div></div></div>';
   $('modalRoot').querySelector('[data-x]').onclick = () => $('modalRoot').innerHTML = '';
+  $('ddCheck').onclick = () => checkDayVsSheet(day);
+}
+/** Compare what the dashboard shows for a day with the rows really in the sheet. */
+async function checkDayVsSheet(day){
+  if (needOnline('Checking the sheet')) return;
+  const b = $('ddCheck'); b.disabled = true; b.innerHTML = '<span class="spin sm"></span> Reading the whole sheet…';
+  let r;
+  try { r = await api('checkDay', day); }
+  catch (e){ $('ddRes').innerHTML = '<p style="color:#a01c1c;font-weight:700">' + esc(e.message || e) + (/Unknown action/i.test(e.message || '') ? ' — deploy Code.gs v35.' : '') + '</p>'; b.disabled = false; b.textContent = '🔍 Check this day against the Google Sheet'; return; }
+  const mine = ROWS.filter(x => x._date === day && !x._pending);
+  const have = new Set(mine.map(x => x._row));
+  const sk = x => (x.tag || '') + '|' + key(x.customer);
+  const sheetSales = new Map(); r.rows.forEach(x => { const k = sk(x); if (!sheetSales.has(k)) sheetSales.set(k, []); sheetSales.get(k).push(x); });
+  const dashSales = new Set(mine.map(x => (x._ctrl || '') + '|' + key(x.customer)));
+  const missing = r.rows.filter(x => !have.has(x.row));
+  const missSales = [...sheetSales.entries()].filter(([k]) => !dashSales.has(k));
+  const credit = x => /SALARY|DEDUC|EMPLOYEE/i.test(x.custCat) || /CREDIT|SALARY|DEDUC/i.test(x.mode);
+  const nS = sheetSales.size, nSX = [...sheetSales.values()].filter(l => credit(l[0])).length;
+  const why = x => x.afterLast ? 'below the last row the dashboard reads (row ' + r.lastData + ') — an empty CUSTOMER cell above it?' : x.dateType === 'text' ? 'date typed as TEXT ("' + x.shown + '")' : 'not in the dashboard copy yet';
+  $('ddRes').innerHTML = '<div style="padding:10px 12px;border:2px solid ' + (missing.length ? '#c62828' : '#2e7d32') + ';border-radius:4px;margin-bottom:10px">' +
+    '<b>Google Sheet, ' + esc(longDate(day)) + ':</b> ' + nS + ' sale(s) (' + (nS - nSX) + ' cash · ' + nSX + ' credit / salary deduct), ' + r.rows.length + ' row(s). ' +
+    '<b>Dashboard:</b> ' + groupsOf(mine).size + ' sale(s), ' + mine.length + ' row(s).<br>' +
+    (missing.length
+      ? '<b style="color:#a01c1c">' + missing.length + ' row(s) / ' + missSales.length + ' sale(s) are in the sheet but not in the dashboard:</b>' +
+        '<div class="tablewrap" style="max-height:30vh;margin-top:6px"><table><thead><tr><th>Sheet row</th><th>TAG #</th><th>Customer</th><th>Category</th><th>Product</th><th class="n">Amount</th><th>Why</th></tr></thead><tbody>' +
+        missing.map(x => '<tr><td>' + x.row + '</td><td>' + esc(x.tag) + '</td><td>' + esc(x.customer) + '</td><td>' + esc(x.custCat) + '</td><td>' + esc(x.particulars) + '</td><td class="n">' + peso(x.amount) + '</td><td>' + esc(why(x)) + '</td></tr>').join('') +
+        '</tbody></table></div><button class="btn primary sm" id="ddReload" style="margin-top:8px">⟳ Re-read the sheet now</button>'
+      : '<b style="color:#2e7d32">✔ Every row of this day in the sheet is in the dashboard.</b>') +
+    (r.badDates.length ? '<p class="hint" style="margin:8px 0 0;color:#7a3e00"><b>' + r.badDates.length + ' recent row(s) have a date the dashboard cannot read</b> (so they are not counted on any day): ' + r.badDates.slice(0, 15).map(x => 'row ' + x.row + ' "' + esc(x.shown) + '" ' + esc(x.customer)).join(' · ') + '</p>' : '') +
+    '<p class="hint" style="margin:6px 0 0">Sheet: header row ' + r.headerRow + ' · last sales row ' + r.lastData + ' · last used row ' + r.sheetLastRow + '</p></div>';
+  b.disabled = false; b.textContent = '🔍 Check again';
+  if ($('ddReload')) $('ddReload').onclick = async () => { $('ddReload').disabled = true; $('ddReload').innerHTML = '<span class="spin sm"></span> Reading…'; await load(true, true); renderSummary(); openDayDetail(day); checkDayVsSheet(day); };
 }
 function exportDaily(){
   const head = ['Date','Day','Transactions','Weight (kg)','Amount','Cash # of Transactions','Cash Weight (kg)','Cash Amount','Credit/Salary Deduct # of Transactions','Credit/Salary Deduct Weight (kg)','Credit/Salary Deduct Amount'];
