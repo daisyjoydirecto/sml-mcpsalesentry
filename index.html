@@ -526,7 +526,7 @@
       <button class="btn primary" id="btnSdLedger">📒 Open ledger</button>
     </div>
     <div class="card" style="margin-bottom:14px;padding:0;overflow:hidden">
-      <div style="display:flex;align-items:center;padding:10px 14px"><h2 style="margin:0;flex:1">Daily sales — Cash vs Credit / Salary deduct</h2><button class="btn sm" id="btnDailyCsv">Export CSV</button></div>
+      <div style="display:flex;align-items:center;padding:10px 14px"><h2 style="margin:0;flex:1">Daily sales — Cash vs Credit / Salary deduct</h2><input type="date" id="chkDay" style="width:auto;margin-right:6px" title="Day to check"><button class="btn sm primary" id="btnChkDay" style="margin-right:6px">🔍 Check day vs Google Sheet</button><button class="btn sm" id="btnDailyCsv">Export CSV</button></div>
       <div style="overflow:auto"><table class="daily" id="dailyTable"></table></div>
     </div>
     <div class="card" id="itemCard" style="padding:0;overflow:hidden">
@@ -2877,11 +2877,11 @@ function openDayDetail(day){
   $('ddCheck').onclick = () => checkDayVsSheet(day);
 }
 /** Compare what the dashboard shows for a day with the rows really in the sheet. */
-async function checkDayVsSheet(day){
+async function checkDayVsSheet(day, full){
   if (needOnline('Checking the sheet')) return;
-  const b = $('ddCheck'); b.disabled = true; b.innerHTML = '<span class="spin sm"></span> Reading the whole sheet…';
+  const b = $('ddCheck'); b.disabled = true; b.innerHTML = '<span class="spin sm"></span> Reading the sheet…';
   let r;
-  try { r = await api('checkDay', day); }
+  try { r = await api('checkDay', day, !!full); }
   catch (e){ $('ddRes').innerHTML = '<p style="color:#a01c1c;font-weight:700">' + esc(e.message || e) + (/Unknown action/i.test(e.message || '') ? ' — deploy Code.gs v35.' : '') + '</p>'; b.disabled = false; b.textContent = '🔍 Check this day against the Google Sheet'; return; }
   const mine = ROWS.filter(x => x._date === day && !x._pending);
   const have = new Set(mine.map(x => x._row));
@@ -2903,8 +2903,10 @@ async function checkDayVsSheet(day){
         '</tbody></table></div><button class="btn primary sm" id="ddReload" style="margin-top:8px">⟳ Re-read the sheet now</button>'
       : '<b style="color:#2e7d32">✔ Every row of this day in the sheet is in the dashboard.</b>') +
     (r.badDates.length ? '<p class="hint" style="margin:8px 0 0;color:#7a3e00"><b>' + r.badDates.length + ' recent row(s) have a date the dashboard cannot read</b> (so they are not counted on any day): ' + r.badDates.slice(0, 15).map(x => 'row ' + x.row + ' "' + esc(x.shown) + '" ' + esc(x.customer)).join(' · ') + '</p>' : '') +
-    '<p class="hint" style="margin:6px 0 0">Sheet: header row ' + r.headerRow + ' · last sales row ' + r.lastData + ' · last used row ' + r.sheetLastRow + '</p></div>';
+    '<p class="hint" style="margin:6px 0 0">Sheet: header row ' + r.headerRow + ' · last sales row ' + r.lastData + ' · last used row ' + r.sheetLastRow + ' · read ' + (r.scanned || 0).toLocaleString() + ' rows in ' + (r.secs || '?') + ' s' +
+      (r.full ? ' (whole sheet)' : ' · <a href="#" id="ddFull">check the whole sheet</a> (slower — finds rows of this day typed far above)') + '</p></div>';
   b.disabled = false; b.textContent = '🔍 Check again';
+  if ($('ddFull')) $('ddFull').onclick = e => { e.preventDefault(); checkDayVsSheet(day, true); };
   if ($('ddReload')) $('ddReload').onclick = async () => { $('ddReload').disabled = true; $('ddReload').innerHTML = '<span class="spin sm"></span> Reading…'; await load(true, true); renderSummary(); openDayDetail(day); checkDayVsSheet(day); };
 }
 function exportDaily(){
@@ -3170,6 +3172,8 @@ $('btnSdUpload').onclick = openSdUpload;
 $('btnSettings').onclick = openSettings;
 $('btnTrash').onclick = openTrash;
 $('btnSafe').onclick = openSafeBox;
+$('chkDay').value = todayISO();
+$('btnChkDay').onclick = () => { const d = $('chkDay').value || todayISO(); openDayDetail(d); checkDayVsSheet(d); };
 document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => { ITEM_VIEW = b.dataset.iv; document.querySelectorAll('[data-iv]').forEach(x => x.classList.toggle('active', x === b)); renderItems(); });
 $('itQ').oninput = renderItems; $('itCsv').onclick = () => exportItemsXlsx().catch(e => toast('Download failed: ' + (e.message || e), true)); $('itPrint').onclick = printItems;
 
