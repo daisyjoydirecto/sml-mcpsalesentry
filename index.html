@@ -2581,7 +2581,8 @@ async function setPaid(list, paid, after){
 }
 
 /* ================= DAY PANEL ================= */
-const gkOf = r => r._pending ? 'P:' + r._uid : (r._ctrl || ('~' + r.customer + '|' + r.custCat));
+// one sale = control number + customer (if the same TAG # was copied to other customers' rows in the sheet, they still count as separate sales)
+const gkOf = r => r._pending ? 'P:' + r._uid : (r._ctrl ? r._ctrl + '|' + key(r.customer) : '~' + key(r.customer) + '|' + r.custCat);
 function groupsOf(rows){
   const g = new Map();
   rows.forEach(r => { const k = gkOf(r); if (!g.has(k)) g.set(k, []); g.get(k).push(r); });
@@ -2858,12 +2859,18 @@ function openDayDetail(day){
   });
   const list = [...per.values()].sort((a, b) => a.t.localeCompare(b.t) || String(a.ctrl).localeCompare(String(b.ctrl)));
   const twice = new Set(list.map(x => key(x.customer)).filter((c, i, a) => a.indexOf(c) !== i));
+  const byCtrl = {}; list.forEach(x => { if (x.ctrl && x.ctrl !== '—' && x.ctrl !== 'PENDING') (byCtrl[x.ctrl] = byCtrl[x.ctrl] || []).push(x.customer); });
+  const shared = Object.keys(byCtrl).filter(c => byCtrl[c].length > 1);
+  const noCtrl = list.filter(x => x.ctrl === '—').length;
   const nC = list.filter(x => x.t === 'Cash').length, nX = list.length - nC;
   $('modalRoot').innerHTML = '<div class="overlay"><div class="modal wide"><div class="mh"><h3>' + esc(longDate(day)) + ' — ' + nC + ' cash · ' + nX + ' credit / salary deduct (per sale)</h3><button class="btn ghost sm" data-x>✕</button></div>' +
     '<div class="body"><p class="hint" style="margin-top:0">Counted as <b>Credit / Salary deduct</b> when CUSTOMER CATEGORY has "SALARY / DEDUCT" or MODE OF PAYMENT is CREDIT / SALARY DEDUCTION. Everything else is Cash. ' +
     'If a value here differs from the sheet, click <b>⟳ Sync</b> to read the sheet again.</p>' +
+    (shared.length ? '<p style="margin:0 0 8px;padding:8px 10px;background:#fff4e5;border:1px solid #e0a040;color:#7a3e00"><b>⚠ ' + shared.length + ' control number(s) are used by more than one customer in the sheet</b> (usually copied / dragged down in the TAG # column): ' +
+      shared.map(c => '<b>' + esc(c) + '</b> → ' + esc(byCtrl[c].join(', '))).join(' · ') + '. Each customer is still counted as its own sale, but please correct the TAG # in the sheet.</p>' : '') +
+    (noCtrl ? '<p class="hint" style="margin:0 0 8px">' + noCtrl + ' sale(s) have no control number (typed directly in the sheet) — each customer counts as one sale.</p>' : '') +
     '<div class="tablewrap" style="max-height:62vh"><table><thead><tr><th>Counted as</th><th>Control No.</th><th>Customer</th><th>Customer category (sheet)</th><th>Mode of payment (sheet)</th><th class="n">Lines</th><th class="n">Amount</th></tr></thead><tbody>' +
-    list.map(x => '<tr><td><b>' + esc(x.t) + '</b></td><td>' + esc(x.ctrl) + '</td><td>' + esc(x.customer) + (twice.has(key(x.customer)) ? ' <span class="hint" style="color:#a35400">(more than 1 sale today)</span>' : '') + '</td><td>' + esc([...x.cats].join(', ')) + '</td><td>' + esc([...x.modes].join(', ')) + '</td><td class="n">' + x.lines + '</td><td class="n">' + peso(x.amt) + '</td></tr>').join('') +
+    list.map(x => '<tr' + (shared.includes(x.ctrl) ? ' style="background:#fff4e5"' : '') + '><td><b>' + esc(x.t) + '</b></td><td>' + esc(x.ctrl) + '</td><td>' + esc(x.customer) + (twice.has(key(x.customer)) ? ' <span class="hint" style="color:#a35400">(more than 1 sale today)</span>' : '') + '</td><td>' + esc([...x.cats].join(', ')) + '</td><td>' + esc([...x.modes].join(', ')) + '</td><td class="n">' + x.lines + '</td><td class="n">' + peso(x.amt) + '</td></tr>').join('') +
     '</tbody></table></div></div></div></div>';
   $('modalRoot').querySelector('[data-x]').onclick = () => $('modalRoot').innerHTML = '';
 }
