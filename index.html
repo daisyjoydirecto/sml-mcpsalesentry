@@ -2148,7 +2148,7 @@ async function dailyViewBoot(){
       if (d.config && d.config.categories) CAT = d.config.categories;
       const v = d.rows.map(a => { const o = {_row: a[0]}; d.keys.forEach((k, i) => o[k] = a[i+1]); return enrich(o); });
       renderDaily(v, {});
-      $('vHead').innerHTML = '<h2 style="margin:0">DAILY SALES — CASH VS CREDIT / SALARY DEDUCT</h2><span class="hint">' + esc(from ? longDate(from) : 'Start') + ' – ' + esc(to ? longDate(to) : 'today') + ' · transactions are counted per person</span>';
+      $('vHead').innerHTML = '<h2 style="margin:0">DAILY SALES — CASH VS CREDIT / SALARY DEDUCT</h2><span class="hint">' + esc(from ? longDate(from) : 'Start') + ' – ' + esc(to ? longDate(to) : 'today') + ' · one transaction = one sale (control number)</span>';
       $('vMsg').innerHTML = ''; $('status').textContent = 'View only · data as of ' + d.at;
     } catch (e){ if (my === SEQ){ $('vMsg').innerHTML = viewErr(e); $('dailyTable').innerHTML = ''; $('status').textContent = 'View only'; } }
   };
@@ -2816,8 +2816,8 @@ function renderDaily(v, f){
     if (!r._date) return;
     const e = m.get(r._date) || {d:r._date, n:0, kg:0, amt:0, cn:0, ckg:0, camt:0, xn:0, xkg:0, xamt:0, _c:new Set(), _x:new Set()};
     e.kg += r._kg; e.amt += r._amt;
-    // transactions = persons, not rows: each customer counts once per day as Cash and once as Credit/Salary deduct
-    const who = key(r.customer) || ('#' + r._row);
+    // transactions = sales (one per control number), the same count as "Entries for" — a customer who buys twice counts twice
+    const who = gkOf(r);
     if (isCreditSale(r)) { e._x.add(who); e.xkg += r._kg; e.xamt += r._amt; } else { e._c.add(who); e.ckg += r._kg; e.camt += r._amt; }
     m.set(r._date, e);
   });
@@ -2852,17 +2852,18 @@ function openDayDetail(day){
   const per = new Map();
   rows.forEach(r => {
     const t = isCreditSale(r) ? 'Credit / Salary deduct' : 'Cash';
-    const k = t + '|' + key(r.customer);
-    const e = per.get(k) || {t, customer: r.customer, cats: new Set(), modes: new Set(), lines: 0, amt: 0};
+    const k = gkOf(r);
+    const e = per.get(k) || {t, ctrl: r._ctrl || (r._pending ? 'PENDING' : '—'), customer: r.customer, cats: new Set(), modes: new Set(), lines: 0, amt: 0};
     e.cats.add(r.custCat || '(blank)'); e.modes.add(r.mode || '(blank)'); e.lines++; e.amt += r._amt; per.set(k, e);
   });
-  const list = [...per.values()].sort((a, b) => a.t.localeCompare(b.t) || a.customer.localeCompare(b.customer));
+  const list = [...per.values()].sort((a, b) => a.t.localeCompare(b.t) || String(a.ctrl).localeCompare(String(b.ctrl)));
+  const twice = new Set(list.map(x => key(x.customer)).filter((c, i, a) => a.indexOf(c) !== i));
   const nC = list.filter(x => x.t === 'Cash').length, nX = list.length - nC;
-  $('modalRoot').innerHTML = '<div class="overlay"><div class="modal wide"><div class="mh"><h3>' + esc(longDate(day)) + ' — ' + nC + ' cash · ' + nX + ' credit / salary deduct (per person)</h3><button class="btn ghost sm" data-x>✕</button></div>' +
+  $('modalRoot').innerHTML = '<div class="overlay"><div class="modal wide"><div class="mh"><h3>' + esc(longDate(day)) + ' — ' + nC + ' cash · ' + nX + ' credit / salary deduct (per sale)</h3><button class="btn ghost sm" data-x>✕</button></div>' +
     '<div class="body"><p class="hint" style="margin-top:0">Counted as <b>Credit / Salary deduct</b> when CUSTOMER CATEGORY has "SALARY / DEDUCT" or MODE OF PAYMENT is CREDIT / SALARY DEDUCTION. Everything else is Cash. ' +
     'If a value here differs from the sheet, click <b>⟳ Sync</b> to read the sheet again.</p>' +
-    '<div class="tablewrap" style="max-height:62vh"><table><thead><tr><th>Counted as</th><th>Customer</th><th>Customer category (sheet)</th><th>Mode of payment (sheet)</th><th class="n">Lines</th><th class="n">Amount</th></tr></thead><tbody>' +
-    list.map(x => '<tr><td><b>' + esc(x.t) + '</b></td><td>' + esc(x.customer) + '</td><td>' + esc([...x.cats].join(', ')) + '</td><td>' + esc([...x.modes].join(', ')) + '</td><td class="n">' + x.lines + '</td><td class="n">' + peso(x.amt) + '</td></tr>').join('') +
+    '<div class="tablewrap" style="max-height:62vh"><table><thead><tr><th>Counted as</th><th>Control No.</th><th>Customer</th><th>Customer category (sheet)</th><th>Mode of payment (sheet)</th><th class="n">Lines</th><th class="n">Amount</th></tr></thead><tbody>' +
+    list.map(x => '<tr><td><b>' + esc(x.t) + '</b></td><td>' + esc(x.ctrl) + '</td><td>' + esc(x.customer) + (twice.has(key(x.customer)) ? ' <span class="hint" style="color:#a35400">(more than 1 sale today)</span>' : '') + '</td><td>' + esc([...x.cats].join(', ')) + '</td><td>' + esc([...x.modes].join(', ')) + '</td><td class="n">' + x.lines + '</td><td class="n">' + peso(x.amt) + '</td></tr>').join('') +
     '</tbody></table></div></div></div></div>';
   $('modalRoot').querySelector('[data-x]').onclick = () => $('modalRoot').innerHTML = '';
 }
