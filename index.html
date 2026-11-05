@@ -536,9 +536,7 @@
     <div class="card" id="itemCard" style="padding:0;overflow:hidden">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 14px">
         <h2 style="margin:0;flex:1;min-width:260px">Daily purchases per item — Walk-in · Volume · Salary deduct</h2>
-        <div class="itdates"><span>📅</span><input type="date" id="itFrom" title="From"><span>to</span><input type="date" id="itTo" title="To">
-          <button class="btn sm" data-ir="today">Today</button><button class="btn sm" data-ir="yday">Yesterday</button><button class="btn sm" data-ir="week">7 days</button><button class="btn sm" data-ir="month">Month</button>
-          <label class="itwhole"><input type="checkbox" id="itWhole"> Combine days</label></div>
+        <div class="itdates"><span>📅</span><input type="date" id="itFrom" title="From"><span>to</span><input type="date" id="itTo" title="To"></div>
         <input id="itQ" placeholder="Search item…" style="width:180px">
         <button class="btn sm" id="itCsv">⬇ Download Excel</button><button class="btn sm primary" id="itPrint">🖨 Print</button>
       </div>
@@ -2718,7 +2716,7 @@ function itemDates(){
   return {from, to};
 }
 function renderItems(){
-  const q = ($('itQ').value || '').trim().toLowerCase(), {from, to} = itemDates(), whole = $('itWhole').checked;
+  const q = ($('itQ').value || '').trim().toLowerCase(), {from, to} = itemDates(), whole = false;
   const list = ROWS.filter(r => r._date && r.particulars && (!from || r._date >= from) && (!to || r._date <= to) && (!q || r.particulars.toLowerCase().includes(q)));
   const cols = ITEM_COLS = itemCols(list);
   const blank = () => { const t = {}; cols.forEach(c => t[c.k] = {kg: 0, amt: 0}); t.tot = {kg: 0, amt: 0}; return t; };
@@ -2760,7 +2758,7 @@ function renderItems(){
     (ITEM_ROWS.length ? '<tr class="tot"><td class="l">GRAND TOTAL' + (!whole && days.length > 1 ? ' (' + days.length + ' days)' : '') + '</td>' + cells(grand) + '</tr>' : '') + '</tbody>';
   // keep the 3 header rows stacked when scrolling (each row sticks below the one above it)
   requestAnimationFrame(() => { let top = 0; $('itemTable').querySelectorAll('thead tr').forEach(tr => { tr.querySelectorAll('th').forEach(th => th.style.top = top + 'px'); top += tr.offsetHeight; }); });
-  $('itRange').textContent = (from ? fmtDate(from) : 'Start') + ' – ' + (to ? fmtDate(to) : 'today') + (whole ? ' · days combined' : ' · per day') +
+  $('itRange').textContent = (from ? fmtDate(from) : 'Start') + ' – ' + (to ? fmtDate(to) : 'today') + '' +
     (DATA_SINCE && from && from < DATA_SINCE ? ' · ⚠ only sales from ' + fmtDate(DATA_SINCE) + ' are loaded — click "All" at the top for older dates' : '');
 }
 function setItemRange(which){
@@ -2785,7 +2783,7 @@ async function exportItemsXlsx(){
   if (!ITEM_ROWS.length) return toast('Nothing to download for these dates.', true);
   toast('Preparing the Excel file…');
   await needExcelJS();
-  const s = settings(), wb = new ExcelJS.Workbook(), whole = $('itWhole').checked, cols = ITEM_COLS, nC = cols.length * 2 + 3;
+  const s = settings(), wb = new ExcelJS.Workbook(), whole = false, cols = ITEM_COLS, nC = cols.length * 2 + 3;
   const ws = wb.addWorksheet('Purchases per item', {views: [{state: 'frozen', ySplit: 6, xSplit: 1}], pageSetup: {orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9}});
   const L = n => { let s = ''; n++; while (n > 0){ const m = (n - 1) % 26; s = String.fromCharCode(65 + m) + s; n = Math.floor((n - 1) / 26); } return s; };   // 0 → A
   ws.columns = [{width: 52}].concat(Array(nC - 1).fill({width: 12.5}));
@@ -3220,8 +3218,7 @@ $('btnTrash').onclick = openTrash;
 $('btnSafe').onclick = openSafeBox;
 $('chkDay').value = todayISO();
 $('btnChkDay').onclick = () => { const d = $('chkDay').value || todayISO(); openDayDetail(d); checkDayVsSheet(d); };
-document.querySelectorAll('[data-ir]').forEach(b => b.onclick = () => setItemRange(b.dataset.ir));
-$('itFrom').onchange = renderItems; $('itTo').onchange = renderItems; $('itWhole').onchange = renderItems;
+$('itFrom').onchange = renderItems; $('itTo').onchange = renderItems;
 $('itQ').oninput = renderItems; $('itCsv').onclick = () => exportItemsXlsx().catch(e => toast('Download failed: ' + (e.message || e), true)); $('itPrint').onclick = printItems;
 
 $('eLimitsBtn').onclick = openLimits;
